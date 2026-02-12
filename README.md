@@ -7,6 +7,7 @@
 - **Shared Network**: All containers in a World share a Docker bridge network and can communicate by name
 - **Automatic Cleanup**: Containers are automatically terminated when the World is destroyed
 - **World Logging**: Optional logging with Gantt chart visualization of container events
+- **Non-blocking Creation**: Containers are created in the background by default, enabling parallel setup
 - **Simplified API**: Reduced boilerplate compared to raw testcontainers-go
 
 ## Installation
@@ -39,7 +40,7 @@ func TestExample(t *testing.T) {
         WaitingFor: wait.ForHTTP("/readyz").WithPort("80/tcp"),
     }
 
-    // Create and start the container
+    // Add the container to the world
     orca := w.NewContainer(spec)
 
     // Execute a command in the container
@@ -71,6 +72,9 @@ spec := testworld.ContainerSpec{
 
     // Start immediately after creation
     Started: true,
+
+    // Block until the container is created 
+    Awaited: true,
 
     // Override entrypoint
     Entrypoint: []string{"/entrypoint.sh"},
@@ -109,10 +113,25 @@ spec := testworld.ContainerSpec{
 
 ### WorldContainer
 
-```go
-// Create a container (set Started: true in spec, or call Start() manually)
-wc := w.NewContainer(spec)
+By default, `NewContainer` returns immediately while the container is created in
+the background. All methods on `WorldContainer` transparently wait for the
+container to be ready before proceeding. This means multiple containers are
+created concurrently:
 
+```go
+// These return immediately — both containers are created in parallel
+db := w.NewContainer(dbSpec)
+app := w.NewContainer(appSpec)
+
+// First method call on each container blocks until it is ready
+db.Wait(wait.ForLog("database system is ready to accept connections"))
+app.Wait(wait.ForHTTP("/healthz").WithPort("8080/tcp"))
+```
+
+Set `Awaited: true` in the spec to make `NewContainer` block until the container
+is fully created (useful when you need the container immediately).
+
+```go
 // Start the container (if not auto-started)
 wc.Start()
 
@@ -135,6 +154,7 @@ spec := testworld.ContainerSpec{
     Image:   "alpine:latest",
     Cmd:     []string{"sleep", "60"},
     Started: true,
+    Awaited: true,
 }
 
 server := w.NewContainer(spec)

@@ -19,6 +19,12 @@ type ContainerSpec struct {
 	// If false, call Start() on the returned container to start it.
 	Started bool
 
+	// Awaited determines whether NewContainer blocks until the container is created.
+	// If false (the default), container creation happens in the background and
+	// methods on WorldContainer transparently wait for it to be ready.
+	// Set to true to make NewContainer block until the container exists.
+	Awaited bool
+
 	// Entrypoint overrides the container's default entrypoint
 	Entrypoint []string
 

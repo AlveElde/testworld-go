@@ -44,11 +44,36 @@ type World struct {
 	containerKinds map[string]int
 }
 
+// pendingContainer holds the result of an async container creation.
+// The goroutine writes container/err before closing ready.
+// Readers call waitReady() which receives from ready, ensuring
+// happens-before ordering per the Go memory model.
+type pendingContainer struct {
+	ready     chan struct{}
+	container testcontainers.Container
+	err       error
+}
+
 type WorldContainer struct {
 	world     *World
 	Name      string
-	container testcontainers.Container
+	pending   *pendingContainer
 	onDestroy func(WorldContainer)
+}
+
+// waitReady blocks until the container creation goroutine finishes.
+func (wc *WorldContainer) waitReady() (testcontainers.Container, error) {
+	<-wc.pending.ready
+	return wc.pending.container, wc.pending.err
+}
+
+// mustReady blocks until the container is ready and fatals if creation failed.
+func (wc *WorldContainer) mustReady() testcontainers.Container {
+	container, err := wc.waitReady()
+	if err != nil {
+		wc.world.t.Fatalf("Container %s failed to create: %v", wc.Name, err)
+	}
+	return container
 }
 
 // New creates a new testworld. w.Destroy() should be deferred right after
@@ -121,6 +146,13 @@ func (w *World) Destroy() {
 	event := w.worldLog.newEvent("World: destroy")
 
 	for name, c := range w.containers {
+		// Wait for async container creation to finish.
+		container, err := c.waitReady()
+		if err != nil {
+			w.t.Log("Container ", name, " failed to create: ", err)
+			continue
+		}
+
 		// Try to collect logs, but don't fail if it doesn't work during cleanup
 		if err := c.logInternal(); err != nil {
 			w.t.Log("Failed to collect logs for container ", name, ": ", err)
@@ -132,7 +164,7 @@ func (w *World) Destroy() {
 
 		// Terminate the container with a half a second timeout
 		// The default timeout is 10 seconds, after which Docker sends SIGKILL
-		err := c.container.Terminate(w.ctx, testcontainers.StopTimeout(time.Millisecond*500))
+		err = container.Terminate(w.ctx, testcontainers.StopTimeout(time.Millisecond*500))
 		if err != nil {
 			w.t.Log("Failed to terminate container ", name, ": ", err)
 		}
@@ -144,10 +176,15 @@ func (w *World) Destroy() {
 
 // logInternal writes the container logs to the world log.
 func (wc *WorldContainer) logInternal() error {
+	container, err := wc.waitReady()
+	if err != nil {
+		return fmt.Errorf("container creation failed: %w", err)
+	}
+
 	event := wc.world.worldLog.newEvent("%s: logs", wc.Name)
 	defer event.finish()
 
-	logsReader, err := wc.container.Logs(wc.world.ctx)
+	logsReader, err := container.Logs(wc.world.ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get logs: %w", err)
 	}
@@ -162,7 +199,9 @@ func (wc *WorldContainer) logInternal() error {
 }
 
 // NewContainer creates a new TestContainer and adds it to the World.
-// Set spec.Started to true to start the container immediately, or call Start() later.
+// By default, container creation happens in the background and WorldContainer
+// methods wait for it to be ready. Set spec.Awaited to true to block until
+// the container is created. Set spec.Started to true to also start the container.
 func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 	// Derive kind from image name, or dockerfile context as fallback
 	kind := basename(spec.Image)
@@ -173,9 +212,6 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 		kind = "container"
 	}
 
-	event := w.worldLog.newEvent("World: add %s container", kind)
-	defer event.finish()
-
 	// Generate a unique name for the container
 	w.containerKinds[kind]++
 	name := fmt.Sprintf("%s-%s-%d", w.name, kind, w.containerKinds[kind])
@@ -183,41 +219,62 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 	// Convert spec to testcontainers request
 	containerRequest := spec.toGenericContainerRequest(name, w.cn.Name)
 
-	// Create the container
-	container, err := testcontainers.GenericContainer(w.ctx, containerRequest)
-	testcontainers.CleanupContainer(w.t, container)
-	if err != nil {
-		w.t.Fatalf("Failed to create container %s: %v", name, err)
+	pc := &pendingContainer{
+		ready: make(chan struct{}),
 	}
 
 	wc := WorldContainer{
 		world:     w,
 		Name:      name,
-		container: container,
+		pending:   pc,
 		onDestroy: spec.OnDestroy,
 	}
 
-	// Add the container to the world
+	// Add the container to the world synchronously so Destroy() can find it
 	w.containers[name] = wc
+
+	// createFn performs the actual container creation. Event tracking lives
+	// here so the Gantt chart reflects actual creation time.
+	createFn := func() {
+		event := w.worldLog.newEvent("World: add %s container", kind)
+		defer event.finish()
+
+		container, err := testcontainers.GenericContainer(w.ctx, containerRequest)
+		testcontainers.CleanupContainer(w.t, container)
+
+		// Write results before closing the channel (happens-before guarantee)
+		pc.container = container
+		pc.err = err
+		close(pc.ready)
+	}
+
+	if spec.Awaited {
+		createFn()
+	} else {
+		go createFn()
+	}
+
 	return wc
 }
 
 // Start starts the container.
 func (wc *WorldContainer) Start() {
+	container := wc.mustReady()
 	event := wc.world.worldLog.newEvent("%s: start", wc.Name)
 	defer event.finish()
 
-	if err := wc.container.Start(wc.world.ctx); err != nil {
+	if err := container.Start(wc.world.ctx); err != nil {
 		wc.world.t.Fatalf("Failed to start container %s: %v", wc.Name, err)
 	}
 }
 
 // Exec executes a command in a container and writes the output to the world log.
 func (wc *WorldContainer) Exec(cmd []string, expectCode int) {
+	container := wc.mustReady()
 	event := wc.world.worldLog.newEvent("%s: exec %s", wc.Name, strings.Join(cmd, " "))
 	defer event.finish()
 
-	exitCode, logsReader, err := wc.container.Exec(wc.world.ctx, cmd)
+	exitCode, logsReader, err := container.Exec(wc.world.ctx, cmd)
 	if err != nil {
 		wc.world.t.Fatalf("Failed to exec in container %s: %v", wc.Name, err)
 	}
@@ -233,20 +290,22 @@ func (wc *WorldContainer) Exec(cmd []string, expectCode int) {
 
 // Wait waits for a container with a given wait strategy.
 func (wc *WorldContainer) Wait(waitStrategy wait.Strategy) {
+	container := wc.mustReady()
 	event := wc.world.worldLog.newEvent("%s: wait", wc.Name)
 	defer event.finish()
 
-	if err := waitStrategy.WaitUntilReady(wc.world.ctx, wc.container); err != nil {
+	if err := waitStrategy.WaitUntilReady(wc.world.ctx, container); err != nil {
 		wc.world.t.Fatalf("Wait failed for container %s: %v", wc.Name, err)
 	}
 }
 
 // LogFile is used to log large files from a container to the world log.
 func (wc *WorldContainer) LogFile(path string) {
+	container := wc.mustReady()
 	event := wc.world.worldLog.newEvent("%s: log file %s", wc.Name, path)
 	defer event.finish()
 
-	reader, err := wc.container.CopyFileFromContainer(wc.world.ctx, path)
+	reader, err := container.CopyFileFromContainer(wc.world.ctx, path)
 	if err != nil {
 		wc.world.t.Fatalf("Failed to copy file %s from container %s: %v", path, wc.Name, err)
 	}

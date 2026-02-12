@@ -56,7 +56,11 @@ func TestNewContainer(t *testing.T) {
 		t.Error("Expected container name to be non-empty")
 	}
 
-	if wc.container == nil {
+	container, err := wc.waitReady()
+	if err != nil {
+		t.Fatalf("Expected container creation to succeed: %v", err)
+	}
+	if container == nil {
 		t.Error("Expected container to be non-nil")
 	}
 
