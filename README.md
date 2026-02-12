@@ -8,6 +8,7 @@
 - **Automatic Cleanup**: Containers are automatically terminated when the World is destroyed
 - **World Logging**: Optional logging with Gantt chart visualization of container events
 - **Non-blocking Creation**: Containers are created in the background by default, enabling parallel setup
+- **Replicas**: Create and control groups of identical containers
 - **Simplified API**: Reduced boilerplate compared to raw testcontainers-go
 
 ## Installation
@@ -73,8 +74,11 @@ spec := testworld.ContainerSpec{
     // Start immediately after creation
     Started: true,
 
-    // Block until the container is created 
+    // Block until the container is created
     Awaited: true,
+
+    // Create multiple identical containers as a group (default: 1)
+    Replicas: 3,
 
     // Override entrypoint
     Entrypoint: []string{"/entrypoint.sh"},
@@ -144,6 +148,28 @@ wc.Wait(wait.ForLog("Server started"))
 // Copy a file from container to the world log
 wc.LogFile("/var/log/app.log")
 ```
+
+### Replicas
+
+Set `Replicas` to create a group of identical containers. All methods on the
+`WorldContainer` execute across every replica. The group name resolves to all
+replica IPs via Docker DNS round-robin:
+
+```go
+servers := w.NewContainer(testworld.ContainerSpec{
+    Image:    "caddy:latest",
+    Awaited: true,
+    Started:  true,
+    Replicas: 3,
+    WaitingFor: wait.ForHTTP("/").WithPort("80/tcp"),
+})
+
+// From another container, the group name resolves to all 3 IPs
+client.Exec([]string{"curl", servers.Name}, 0)
+```
+
+Each replica also gets its own unique name (`servers.Name + "-1"`, `-2`, etc.)
+for individual addressing.
 
 ### Network Connectivity
 

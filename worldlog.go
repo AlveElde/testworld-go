@@ -108,15 +108,18 @@ func (el *WorldLog) printGantt() {
 	fmt.Fprintln(el.combinedLog, "----|"+strings.Repeat("-", timelineWidth))
 
 	for _, e := range el.events {
-		// Calculate offset and bar length
-		startOffset := e.startTime.Sub(el.startTime).Seconds()
-		duration := e.finishTime.Sub(e.startTime).Seconds()
-
-		startPos := int((startOffset / totalDuration) * timelineWidth)
-		barLen := int((duration / totalDuration) * timelineWidth)
-		if barLen == 0 {
-			barLen = 1
+		// Calculate offset and bar length.
+		// If the event was never finished (e.g., test failed mid-way),
+		// treat it as running until the world was destroyed.
+		finishTime := e.finishTime
+		if finishTime.IsZero() {
+			finishTime = el.finishTime
 		}
+		startOffset := e.startTime.Sub(el.startTime).Seconds()
+		duration := finishTime.Sub(e.startTime).Seconds()
+
+		startPos := max(int((startOffset/totalDuration)*timelineWidth), 0)
+		barLen := max(int((duration/totalDuration)*timelineWidth), 1)
 
 		padding := strings.Repeat(" ", startPos)
 		bar := strings.Repeat("#", barLen)

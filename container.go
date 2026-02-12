@@ -25,6 +25,13 @@ type ContainerSpec struct {
 	// Set to true to make NewContainer block until the container exists.
 	Awaited bool
 
+	// Replicas is the number of identical containers to create.
+	// When > 1, the WorldContainer represents a group of replicas.
+	// Methods are executed on all replicas. The group name resolves
+	// to all replica IPs via DNS round-robin.
+	// Defaults to 1 if unset or zero.
+	Replicas int
+
 	// Entrypoint overrides the container's default entrypoint
 	Entrypoint []string
 
@@ -57,7 +64,7 @@ type ContainerSpec struct {
 }
 
 // toGenericContainerRequest converts a ContainerSpec to a testcontainers.GenericContainerRequest.
-func (spec ContainerSpec) toGenericContainerRequest(name, networkName string) testcontainers.GenericContainerRequest {
+func (spec ContainerSpec) toGenericContainerRequest(name, networkName string, aliases []string) testcontainers.GenericContainerRequest {
 	return testcontainers.GenericContainerRequest{
 		Started: spec.Started,
 		ContainerRequest: testcontainers.ContainerRequest{
@@ -65,7 +72,7 @@ func (spec ContainerSpec) toGenericContainerRequest(name, networkName string) te
 			Image:              spec.Image,
 			Name:               name,
 			Networks:           []string{networkName},
-			NetworkAliases:     map[string][]string{networkName: {name}},
+			NetworkAliases:     map[string][]string{networkName: aliases},
 			Entrypoint:         spec.Entrypoint,
 			Cmd:                spec.Cmd,
 			Env:                spec.Env,

@@ -1,6 +1,7 @@
 package testworld
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,7 +10,7 @@ import (
 
 // TestWorldCreation tests that a World can be created and destroyed properly.
 func TestWorldCreation(t *testing.T) {
-	w := New(t, "")
+	w := New(t, "./logs")
 	defer w.Destroy()
 
 	if w.name != t.Name() {
@@ -42,7 +43,7 @@ func TestWorldWithWorldLog(t *testing.T) {
 
 // TestNewContainer tests that a container can be added to the world.
 func TestNewContainer(t *testing.T) {
-	w := New(t, "")
+	w := New(t, "./logs")
 	defer w.Destroy()
 
 	spec := ContainerSpec{
@@ -56,11 +57,14 @@ func TestNewContainer(t *testing.T) {
 		t.Error("Expected container name to be non-empty")
 	}
 
-	container, err := wc.waitReady()
+	containers, err := wc.waitReady()
 	if err != nil {
 		t.Fatalf("Expected container creation to succeed: %v", err)
 	}
-	if container == nil {
+	if len(containers) != 1 {
+		t.Errorf("Expected 1 container, got %d", len(containers))
+	}
+	if containers[0] == nil {
 		t.Error("Expected container to be non-nil")
 	}
 
@@ -76,7 +80,7 @@ func TestNewContainer(t *testing.T) {
 
 // TestContainerStart tests that a container can be explicitly started.
 func TestContainerStart(t *testing.T) {
-	w := New(t, "")
+	w := New(t, "./logs")
 	defer w.Destroy()
 
 	spec := ContainerSpec{
@@ -96,7 +100,7 @@ func TestContainerStart(t *testing.T) {
 
 // TestContainerExec tests executing a command in a container.
 func TestContainerExec(t *testing.T) {
-	w := New(t, "")
+	w := New(t, "./logs")
 	defer w.Destroy()
 
 	spec := ContainerSpec{
@@ -116,7 +120,7 @@ func TestContainerExec(t *testing.T) {
 
 // TestContainerWait tests waiting for a container with a wait strategy.
 func TestContainerWait(t *testing.T) {
-	w := New(t, "")
+	w := New(t, "./logs")
 	defer w.Destroy()
 
 	spec := ContainerSpec{
@@ -154,7 +158,7 @@ func TestContainerLogFile(t *testing.T) {
 
 // TestMultipleContainers tests creating multiple containers in the same world.
 func TestMultipleContainers(t *testing.T) {
-	w := New(t, "")
+	w := New(t, "./logs")
 	defer w.Destroy()
 
 	spec := ContainerSpec{
@@ -184,7 +188,7 @@ func TestMultipleContainers(t *testing.T) {
 
 // TestContainerOnDestroy tests the onDestroy callback.
 func TestContainerOnDestroy(t *testing.T) {
-	w := New(t, "")
+	w := New(t, "./logs")
 
 	destroyCalled := false
 	onDestroy := func(wc WorldContainer) {
@@ -210,7 +214,7 @@ func TestContainerOnDestroy(t *testing.T) {
 
 // TestNetworkConnectivity tests that containers in the same world can communicate.
 func TestNetworkConnectivity(t *testing.T) {
-	w := New(t, "")
+	w := New(t, "./logs")
 	defer w.Destroy()
 
 	spec := ContainerSpec{
@@ -225,4 +229,134 @@ func TestNetworkConnectivity(t *testing.T) {
 
 	// Test that container 1 can ping container 2 by name
 	wc1.Exec([]string{"ping", "-c", "1", wc2.Name}, 0)
+}
+
+// TestReplicas tests that creating a container with Replicas > 1
+// creates the correct number of replicas with unique names.
+func TestReplicas(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	spec := ContainerSpec{
+		Image:    "alpine:latest",
+		Cmd:      []string{"sleep", "30"},
+		Replicas: 3,
+	}
+
+	wc := w.NewContainer(spec)
+
+	// The WorldContainer should have 3 pending replicas
+	if len(wc.pending) != 3 {
+		t.Fatalf("Expected 3 pending replicas, got %d", len(wc.pending))
+	}
+
+	// Wait for all replicas to be created
+	containers, err := wc.waitReady()
+	if err != nil {
+		t.Fatalf("Expected replica creation to succeed: %v", err)
+	}
+
+	if len(containers) != 3 {
+		t.Fatalf("Expected 3 containers, got %d", len(containers))
+	}
+
+	// Verify each replica has a unique name with the right suffix
+	for i, pc := range wc.pending {
+		expectedName := fmt.Sprintf("%s-%d", wc.Name, i+1)
+		if pc.name != expectedName {
+			t.Errorf("Replica %d: expected name %q, got %q", i+1, expectedName, pc.name)
+		}
+	}
+
+	// The world should have one entry (the group)
+	if len(w.containers) != 1 {
+		t.Errorf("Expected 1 container group in world, got %d", len(w.containers))
+	}
+}
+
+// TestReplicaExec tests that Exec runs on all replicas.
+func TestReplicaExec(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	spec := ContainerSpec{
+		Image:    "alpine:latest",
+		Cmd:      []string{"sleep", "30"},
+		Started:  true,
+		Replicas: 2,
+	}
+
+	wc := w.NewContainer(spec)
+
+	// Exec should succeed on both replicas
+	wc.Exec([]string{"echo", "hello"}, 0)
+}
+
+// TestReplicaDNS tests that all replicas share the group name as a DNS alias,
+// so the group name resolves to all replica IPs.
+func TestReplicaDNS(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	replicaSpec := ContainerSpec{
+		Image:    "alpine:latest",
+		Cmd:      []string{"sleep", "60"},
+		Started:  true,
+		Replicas: 3,
+	}
+
+	clientSpec := ContainerSpec{
+		Image:   "alpine:latest",
+		Cmd:     []string{"sleep", "60"},
+		Started: true,
+		Awaited: true,
+	}
+
+	servers := w.NewContainer(replicaSpec)
+	client := w.NewContainer(clientSpec)
+
+	// Verify that the group name resolves to exactly 3 IPs.
+	// nslookup returns "Address" lines for both the DNS server (127.0.0.11)
+	// and the results; filter out the server to count only result IPs.
+	client.Exec([]string{"sh", "-c", fmt.Sprintf(
+		`test "$(nslookup %s | grep 'Address' | grep -cv '127.0.0.11')" -eq 3`,
+		servers.Name,
+	)}, 0)
+
+	// Each individual replica should also be reachable by its own name
+	for _, pc := range servers.pending {
+		client.Exec([]string{"ping", "-c", "1", pc.name}, 0)
+	}
+}
+
+// TestReplicaHTTP tests replicas with a real HTTP server (caddy),
+// verifying that the group name resolves to all replica IPs.
+func TestReplicaHTTP(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	servers := w.NewContainer(ContainerSpec{
+		Image:      "caddy:latest",
+		Started:    true,
+		Awaited:    true,
+		Replicas:   3,
+		WaitingFor: wait.ForHTTP("/").WithPort("80/tcp"),
+	})
+
+	client := w.NewContainer(ContainerSpec{
+		Image:   "alpine:latest",
+		Cmd:     []string{"sleep", "60"},
+		Started: true,
+	})
+
+	// Verify the group name resolves to 3 IPs
+	client.Exec([]string{"sh", "-c", fmt.Sprintf(
+		`test "$(nslookup %s | grep 'Address' | grep -cv '127.0.0.11')" -eq 3`,
+		servers.Name,
+	)}, 0)
+
+	// Verify each individual replica is serving HTTP
+	for _, pc := range servers.pending {
+		client.Exec([]string{"wget", "-q", "-O", "/dev/null", fmt.Sprintf("http://%s:80/", pc.name)}, 0)
+	}
 }

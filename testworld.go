@@ -49,6 +49,7 @@ type World struct {
 // Readers call waitReady() which receives from ready, ensuring
 // happens-before ordering per the Go memory model.
 type pendingContainer struct {
+	name      string
 	ready     chan struct{}
 	container testcontainers.Container
 	err       error
@@ -57,23 +58,30 @@ type pendingContainer struct {
 type WorldContainer struct {
 	world     *World
 	Name      string
-	pending   *pendingContainer
+	pending   []*pendingContainer
 	onDestroy func(WorldContainer)
 }
 
-// waitReady blocks until the container creation goroutine finishes.
-func (wc *WorldContainer) waitReady() (testcontainers.Container, error) {
-	<-wc.pending.ready
-	return wc.pending.container, wc.pending.err
+// waitReady blocks until all replica creation goroutines finish.
+func (wc *WorldContainer) waitReady() ([]testcontainers.Container, error) {
+	containers := make([]testcontainers.Container, len(wc.pending))
+	for i, pc := range wc.pending {
+		<-pc.ready
+		if pc.err != nil {
+			return containers, fmt.Errorf("%s: %w", pc.name, pc.err)
+		}
+		containers[i] = pc.container
+	}
+	return containers, nil
 }
 
-// mustReady blocks until the container is ready and fatals if creation failed.
-func (wc *WorldContainer) mustReady() testcontainers.Container {
-	container, err := wc.waitReady()
+// mustReady blocks until all replicas are ready and fatals if any creation failed.
+func (wc *WorldContainer) mustReady() []testcontainers.Container {
+	containers, err := wc.waitReady()
 	if err != nil {
 		wc.world.t.Fatalf("Container %s failed to create: %v", wc.Name, err)
 	}
-	return container
+	return containers
 }
 
 // New creates a new testworld. w.Destroy() should be deferred right after
@@ -145,28 +153,29 @@ func (w *World) Destroy() {
 
 	event := w.worldLog.newEvent("World: destroy")
 
-	for name, c := range w.containers {
-		// Wait for async container creation to finish.
-		container, err := c.waitReady()
-		if err != nil {
-			w.t.Log("Container ", name, " failed to create: ", err)
-			continue
-		}
+	for _, c := range w.containers {
+		for _, pc := range c.pending {
+			<-pc.ready
+			if pc.err != nil {
+				w.t.Log("Container ", pc.name, " failed to create: ", pc.err)
+				continue
+			}
 
-		// Try to collect logs, but don't fail if it doesn't work during cleanup
-		if err := c.logInternal(); err != nil {
-			w.t.Log("Failed to collect logs for container ", name, ": ", err)
+			// Try to collect logs, but don't fail if it doesn't work during cleanup
+			if err := c.logOneInternal(pc.name, pc.container); err != nil {
+				w.t.Log("Failed to collect logs for container ", pc.name, ": ", err)
+			}
+
+			// Terminate the container with a half a second timeout
+			// The default timeout is 10 seconds, after which Docker sends SIGKILL
+			err := pc.container.Terminate(w.ctx, testcontainers.StopTimeout(time.Millisecond*500))
+			if err != nil {
+				w.t.Log("Failed to terminate container ", pc.name, ": ", err)
+			}
 		}
 
 		if c.onDestroy != nil {
 			c.onDestroy(c)
-		}
-
-		// Terminate the container with a half a second timeout
-		// The default timeout is 10 seconds, after which Docker sends SIGKILL
-		err = container.Terminate(w.ctx, testcontainers.StopTimeout(time.Millisecond*500))
-		if err != nil {
-			w.t.Log("Failed to terminate container ", name, ": ", err)
 		}
 	}
 
@@ -174,14 +183,9 @@ func (w *World) Destroy() {
 	w.worldLog.finish()
 }
 
-// logInternal writes the container logs to the world log.
-func (wc *WorldContainer) logInternal() error {
-	container, err := wc.waitReady()
-	if err != nil {
-		return fmt.Errorf("container creation failed: %w", err)
-	}
-
-	event := wc.world.worldLog.newEvent("%s: logs", wc.Name)
+// logOneInternal writes a single container's logs to the world log.
+func (wc *WorldContainer) logOneInternal(name string, container testcontainers.Container) error {
+	event := wc.world.worldLog.newEvent("%s: logs", name)
 	defer event.finish()
 
 	logsReader, err := container.Logs(wc.world.ctx)
@@ -202,6 +206,7 @@ func (wc *WorldContainer) logInternal() error {
 // By default, container creation happens in the background and WorldContainer
 // methods wait for it to be ready. Set spec.Awaited to true to block until
 // the container is created. Set spec.Started to true to also start the container.
+// Set spec.Replicas to create multiple identical containers as a group.
 func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 	// Derive kind from image name, or dockerfile context as fallback
 	kind := basename(spec.Image)
@@ -212,108 +217,140 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 		kind = "container"
 	}
 
-	// Generate a unique name for the container
+	// Generate a unique group name for the container
 	w.containerKinds[kind]++
 	name := fmt.Sprintf("%s-%s-%d", w.name, kind, w.containerKinds[kind])
 
-	// Convert spec to testcontainers request
-	containerRequest := spec.toGenericContainerRequest(name, w.cn.Name)
-
-	pc := &pendingContainer{
-		ready: make(chan struct{}),
-	}
+	replicas := max(spec.Replicas, 1)
+	pending := make([]*pendingContainer, replicas)
 
 	wc := WorldContainer{
 		world:     w,
 		Name:      name,
-		pending:   pc,
+		pending:   pending,
 		onDestroy: spec.OnDestroy,
 	}
 
 	// Add the container to the world synchronously so Destroy() can find it
 	w.containers[name] = wc
 
-	// createFn performs the actual container creation. Event tracking lives
-	// here so the Gantt chart reflects actual creation time.
-	createFn := func() {
-		event := w.worldLog.newEvent("World: add %s container", kind)
-		defer event.finish()
+	for i := range replicas {
+		// For a single replica, the replica name is the group name.
+		// For multiple replicas, each gets a unique suffix.
+		replicaName := name
+		aliases := []string{name}
+		if replicas > 1 {
+			replicaName = fmt.Sprintf("%s-%d", name, i+1)
+			aliases = []string{replicaName, name}
+		}
 
-		container, err := testcontainers.GenericContainer(w.ctx, containerRequest)
-		testcontainers.CleanupContainer(w.t, container)
+		pc := &pendingContainer{
+			name:  replicaName,
+			ready: make(chan struct{}),
+		}
+		pending[i] = pc
 
-		// Write results before closing the channel (happens-before guarantee)
-		pc.container = container
-		pc.err = err
-		close(pc.ready)
-	}
+		containerRequest := spec.toGenericContainerRequest(replicaName, w.cn.Name, aliases)
 
-	if spec.Awaited {
-		createFn()
-	} else {
-		go createFn()
+		// createFn performs the actual container creation. Event tracking lives
+		// here so the Gantt chart reflects actual creation time.
+		createFn := func() {
+			event := w.worldLog.newEvent("World: add %s container %s", kind, replicaName)
+			defer event.finish()
+
+			container, err := testcontainers.GenericContainer(w.ctx, containerRequest)
+			testcontainers.CleanupContainer(w.t, container)
+
+			// Write results before closing the channel (happens-before guarantee)
+			pc.container = container
+			pc.err = err
+			close(pc.ready)
+		}
+
+		if spec.Awaited {
+			createFn()
+		} else {
+			go createFn()
+		}
 	}
 
 	return wc
 }
 
-// Start starts the container.
+// Start starts all replica containers.
 func (wc *WorldContainer) Start() {
-	container := wc.mustReady()
-	event := wc.world.worldLog.newEvent("%s: start", wc.Name)
-	defer event.finish()
+	containers := wc.mustReady()
+	for i, container := range containers {
+		name := wc.pending[i].name
+		event := wc.world.worldLog.newEvent("%s: start", name)
 
-	if err := container.Start(wc.world.ctx); err != nil {
-		wc.world.t.Fatalf("Failed to start container %s: %v", wc.Name, err)
-	}
-}
-
-// Exec executes a command in a container and writes the output to the world log.
-func (wc *WorldContainer) Exec(cmd []string, expectCode int) {
-	container := wc.mustReady()
-	event := wc.world.worldLog.newEvent("%s: exec %s", wc.Name, strings.Join(cmd, " "))
-	defer event.finish()
-
-	exitCode, logsReader, err := container.Exec(wc.world.ctx, cmd)
-	if err != nil {
-		wc.world.t.Fatalf("Failed to exec in container %s: %v", wc.Name, err)
-	}
-	// Write the logs to file, demultiplexing stdout and stderr
-	if event != nil {
-		defer stdcopy.StdCopy(event.log, event.log, logsReader)
-	}
-
-	if exitCode != expectCode {
-		wc.world.t.Fatalf("Command %v exited with code %d (expected %d)", cmd, exitCode, expectCode)
-	}
-}
-
-// Wait waits for a container with a given wait strategy.
-func (wc *WorldContainer) Wait(waitStrategy wait.Strategy) {
-	container := wc.mustReady()
-	event := wc.world.worldLog.newEvent("%s: wait", wc.Name)
-	defer event.finish()
-
-	if err := waitStrategy.WaitUntilReady(wc.world.ctx, container); err != nil {
-		wc.world.t.Fatalf("Wait failed for container %s: %v", wc.Name, err)
-	}
-}
-
-// LogFile is used to log large files from a container to the world log.
-func (wc *WorldContainer) LogFile(path string) {
-	container := wc.mustReady()
-	event := wc.world.worldLog.newEvent("%s: log file %s", wc.Name, path)
-	defer event.finish()
-
-	reader, err := container.CopyFileFromContainer(wc.world.ctx, path)
-	if err != nil {
-		wc.world.t.Fatalf("Failed to copy file %s from container %s: %v", path, wc.Name, err)
-	}
-	defer reader.Close()
-
-	if event != nil {
-		if _, err = io.Copy(event.log, reader); err != nil {
-			wc.world.t.Fatalf("Failed to copy file content for %s: %v", path, err)
+		if err := container.Start(wc.world.ctx); err != nil {
+			wc.world.t.Fatalf("Failed to start container %s: %v", name, err)
 		}
+
+		event.finish()
+	}
+}
+
+// Exec executes a command in all replica containers and writes the output to the world log.
+func (wc *WorldContainer) Exec(cmd []string, expectCode int) {
+	containers := wc.mustReady()
+	for i, container := range containers {
+		name := wc.pending[i].name
+		event := wc.world.worldLog.newEvent("%s: exec %s", name, strings.Join(cmd, " "))
+
+		exitCode, logsReader, err := container.Exec(wc.world.ctx, cmd)
+		if err != nil {
+			wc.world.t.Fatalf("Failed to exec in container %s: %v", name, err)
+		}
+		// Write the logs to file, demultiplexing stdout and stderr
+		if event != nil {
+			stdcopy.StdCopy(event.log, event.log, logsReader)
+		}
+
+		if exitCode != expectCode {
+			wc.world.t.Fatalf("Command %v exited with code %d (expected %d) in container %s", cmd, exitCode, expectCode, name)
+		}
+
+		event.finish()
+	}
+}
+
+// Wait waits for all replica containers with a given wait strategy.
+func (wc *WorldContainer) Wait(waitStrategy wait.Strategy) {
+	containers := wc.mustReady()
+	for i, container := range containers {
+		name := wc.pending[i].name
+		event := wc.world.worldLog.newEvent("%s: wait", name)
+
+		if err := waitStrategy.WaitUntilReady(wc.world.ctx, container); err != nil {
+			wc.world.t.Fatalf("Wait failed for container %s: %v", name, err)
+		}
+
+		event.finish()
+	}
+}
+
+// LogFile copies a file from all replica containers to the world log.
+func (wc *WorldContainer) LogFile(path string) {
+	containers := wc.mustReady()
+	for i, container := range containers {
+		name := wc.pending[i].name
+		event := wc.world.worldLog.newEvent("%s: log file %s", name, path)
+
+		reader, err := container.CopyFileFromContainer(wc.world.ctx, path)
+		if err != nil {
+			wc.world.t.Fatalf("Failed to copy file %s from container %s: %v", path, name, err)
+		}
+
+		if event != nil {
+			if _, err = io.Copy(event.log, reader); err != nil {
+				reader.Close()
+				wc.world.t.Fatalf("Failed to copy file content for %s: %v", path, err)
+			}
+		}
+		reader.Close()
+
+		event.finish()
 	}
 }
