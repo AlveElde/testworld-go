@@ -202,10 +202,9 @@ func (wc *WorldContainer) logOneInternal(name string, container testcontainers.C
 	return nil
 }
 
-// NewContainer creates a new TestContainer and adds it to the World.
-// By default, container creation happens in the background and WorldContainer
-// methods wait for it to be ready. Set spec.Awaited to true to block until
-// the container is created. Set spec.Started to true to also start the container.
+// NewContainer creates a new container and adds it to the World.
+// Container creation happens in the background and WorldContainer methods
+// wait for it to be ready. Call Await() to explicitly block until ready.
 // Set spec.Replicas to create multiple identical containers as a group.
 func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 	// Derive kind from image name, or dockerfile context as fallback
@@ -267,29 +266,15 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 			close(pc.ready)
 		}
 
-		if spec.Awaited {
-			createFn()
-		} else {
-			go createFn()
-		}
+		go createFn()
 	}
 
 	return wc
 }
 
-// Start starts all replica containers.
-func (wc *WorldContainer) Start() {
-	containers := wc.mustReady()
-	for i, container := range containers {
-		name := wc.pending[i].name
-		event := wc.world.worldLog.newEvent("%s: start", name)
-
-		if err := container.Start(wc.world.ctx); err != nil {
-			wc.world.t.Fatalf("Failed to start container %s: %v", name, err)
-		}
-
-		event.finish()
-	}
+// Await blocks until all replica containers are created and started.
+func (wc *WorldContainer) Await() {
+	wc.mustReady()
 }
 
 // Exec executes a command in all replica containers and writes the output to the world log.

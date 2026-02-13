@@ -15,16 +15,6 @@ type ContainerSpec struct {
 	// FromDockerfile allows building an image from a Dockerfile.
 	FromDockerfile testcontainers.FromDockerfile
 
-	// Started determines whether to start the container immediately after creation.
-	// If false, call Start() on the returned container to start it.
-	Started bool
-
-	// Awaited determines whether NewContainer blocks until the container is created.
-	// If false (the default), container creation happens in the background and
-	// methods on WorldContainer transparently wait for it to be ready.
-	// Set to true to make NewContainer block until the container exists.
-	Awaited bool
-
 	// Replicas is the number of identical containers to create.
 	// When > 1, the WorldContainer represents a group of replicas.
 	// Methods are executed on all replicas. The group name resolves
@@ -66,7 +56,7 @@ type ContainerSpec struct {
 // toGenericContainerRequest converts a ContainerSpec to a testcontainers.GenericContainerRequest.
 func (spec ContainerSpec) toGenericContainerRequest(name, networkName string, aliases []string) testcontainers.GenericContainerRequest {
 	return testcontainers.GenericContainerRequest{
-		Started: spec.Started,
+		Started: true,
 		ContainerRequest: testcontainers.ContainerRequest{
 			FromDockerfile:     spec.FromDockerfile,
 			Image:              spec.Image,

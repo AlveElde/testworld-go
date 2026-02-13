@@ -78,8 +78,8 @@ func TestNewContainer(t *testing.T) {
 	}
 }
 
-// TestContainerStart tests that a container can be explicitly started.
-func TestContainerStart(t *testing.T) {
+// TestContainerAwait tests that Await blocks until the container is ready.
+func TestContainerAwait(t *testing.T) {
 	w := New(t, "./logs")
 	defer w.Destroy()
 
@@ -88,11 +88,11 @@ func TestContainerStart(t *testing.T) {
 		Cmd:   []string{"sleep", "30"},
 	}
 
-	// Create container without starting
+	// Create container (non-blocking)
 	wc := w.NewContainer(spec)
 
-	// Explicitly start the container
-	wc.Start()
+	// Explicitly wait for the container to be ready
+	wc.Await()
 
 	// Verify container is running by executing a command
 	wc.Exec([]string{"echo", "hello"}, 0)
@@ -104,9 +104,8 @@ func TestContainerExec(t *testing.T) {
 	defer w.Destroy()
 
 	spec := ContainerSpec{
-		Image:   "alpine:latest",
-		Cmd:     []string{"sleep", "30"},
-		Started: true,
+		Image: "alpine:latest",
+		Cmd:   []string{"sleep", "30"},
 	}
 
 	wc := w.NewContainer(spec)
@@ -124,9 +123,8 @@ func TestContainerWait(t *testing.T) {
 	defer w.Destroy()
 
 	spec := ContainerSpec{
-		Image:   "alpine:latest",
-		Cmd:     []string{"sleep", "30"},
-		Started: true,
+		Image: "alpine:latest",
+		Cmd:   []string{"sleep", "30"},
 	}
 
 	wc := w.NewContainer(spec)
@@ -142,9 +140,8 @@ func TestContainerLogFile(t *testing.T) {
 	defer w.Destroy()
 
 	spec := ContainerSpec{
-		Image:   "alpine:latest",
-		Cmd:     []string{"sh", "-c", "echo 'file content' > /tmp/testfile.txt && sleep 30"},
-		Started: true,
+		Image: "alpine:latest",
+		Cmd:   []string{"sh", "-c", "echo 'file content' > /tmp/testfile.txt && sleep 30"},
 	}
 
 	wc := w.NewContainer(spec)
@@ -198,7 +195,6 @@ func TestContainerOnDestroy(t *testing.T) {
 	spec := ContainerSpec{
 		Image:     "alpine:latest",
 		Cmd:       []string{"sleep", "30"},
-		Started:   true,
 		OnDestroy: onDestroy,
 	}
 
@@ -218,9 +214,8 @@ func TestNetworkConnectivity(t *testing.T) {
 	defer w.Destroy()
 
 	spec := ContainerSpec{
-		Image:   "alpine:latest",
-		Cmd:     []string{"sleep", "60"},
-		Started: true,
+		Image: "alpine:latest",
+		Cmd:   []string{"sleep", "60"},
 	}
 
 	wc1 := w.NewContainer(spec)
@@ -282,7 +277,6 @@ func TestReplicaExec(t *testing.T) {
 	spec := ContainerSpec{
 		Image:    "alpine:latest",
 		Cmd:      []string{"sleep", "30"},
-		Started:  true,
 		Replicas: 2,
 	}
 
@@ -301,19 +295,19 @@ func TestReplicaDNS(t *testing.T) {
 	replicaSpec := ContainerSpec{
 		Image:    "alpine:latest",
 		Cmd:      []string{"sleep", "60"},
-		Started:  true,
 		Replicas: 3,
 	}
 
 	clientSpec := ContainerSpec{
-		Image:   "alpine:latest",
-		Cmd:     []string{"sleep", "60"},
-		Started: true,
-		Awaited: true,
+		Image: "alpine:latest",
+		Cmd:   []string{"sleep", "60"},
 	}
 
 	servers := w.NewContainer(replicaSpec)
 	client := w.NewContainer(clientSpec)
+
+	// Wait for the servers to be ready before testing DNS resolution
+	servers.Await()
 
 	// Verify that the group name resolves to exactly 3 IPs.
 	// nslookup returns "Address" lines for both the DNS server (127.0.0.11)
@@ -337,17 +331,16 @@ func TestReplicaHTTP(t *testing.T) {
 
 	servers := w.NewContainer(ContainerSpec{
 		Image:      "caddy:latest",
-		Started:    true,
-		Awaited:    true,
 		Replicas:   3,
 		WaitingFor: wait.ForHTTP("/").WithPort("80/tcp"),
 	})
 
 	client := w.NewContainer(ContainerSpec{
-		Image:   "alpine:latest",
-		Cmd:     []string{"sleep", "60"},
-		Started: true,
+		Image: "alpine:latest",
+		Cmd:   []string{"sleep", "60"},
 	})
+
+	servers.Await()
 
 	// Verify the group name resolves to 3 IPs
 	client.Exec([]string{"sh", "-c", fmt.Sprintf(

@@ -4,12 +4,12 @@
 
 ## Features
 
-- **Shared Network**: All containers in a World share a Docker bridge network and can communicate by name
-- **Automatic Cleanup**: Containers are automatically terminated when the World is destroyed
-- **World Logging**: Optional logging with Gantt chart visualization of container events
-- **Non-blocking Creation**: Containers are created in the background by default, enabling parallel setup
-- **Replicas**: Create and control groups of identical containers
-- **Simplified API**: Reduced boilerplate compared to raw testcontainers-go
+- **Async**: Containers are created asynchronously, leading to faster tests when more than one container is used.
+- **Test isolation**: Each test creates a separate namespace and docker bridge network.
+- **Replicas**: Create and control groups of identical containers.
+- **Low boilerplate**: Reduced boilerplate compared to `testcontainers-go`
+- **Log collection**: Collect logs from all containers and output to a verbose log file. 
+- **Event tracking**: Outputs a timeline of events during the test.
 
 ## Installation
 
@@ -29,23 +29,27 @@ import (
     "github.com/testcontainers/testcontainers-go/wait"
 )
 
-func TestExample(t *testing.T) {
-    // Create a new test world
+func TestWebCluster(t *testing.T) {
     w := testworld.New(t, "")
     defer w.Destroy()
 
-    // Define a container
-    spec := testworld.ContainerSpec{
-        Image:   "varnish/orca:latest",
-        Started: true,
-        WaitingFor: wait.ForHTTP("/readyz").WithPort("80/tcp"),
-    }
+    // Spin up 3 web servers and a client — all 4 containers are created in parallel
+    servers := w.NewContainer(testworld.ContainerSpec{
+        Image:      "caddy:latest",
+        Replicas:   3,
+        WaitingFor: wait.ForHTTP("/").WithPort("80/tcp"),
+    })
 
-    // Add the container to the world
-    orca := w.NewContainer(spec)
+    client := w.NewContainer(testworld.ContainerSpec{
+        Image: "alpine:latest",
+        Cmd:   []string{"sleep", "60"},
+    })
 
-    // Execute a command in the container
-    orca.Exec([]string{"varnish-supervisor", "--version"}, 0)
+    // Wait for all servers to be ready
+    servers.Await()
+
+    // The group name resolves to all 3 server IPs via DNS round-robin
+    client.Exec([]string{"wget", "-q", "-O", "/dev/null", "http://" + servers.Name}, 0)
 }
 ```
 
@@ -70,12 +74,6 @@ spec := testworld.ContainerSpec{
     FromDockerfile: testcontainers.FromDockerfile{
         Context: "./docker/myapp",
     },
-
-    // Start immediately after creation
-    Started: true,
-
-    // Block until the container is created
-    Awaited: true,
 
     // Create multiple identical containers as a group (default: 1)
     Replicas: 3,
@@ -117,10 +115,8 @@ spec := testworld.ContainerSpec{
 
 ### WorldContainer
 
-By default, `NewContainer` returns immediately while the container is created in
-the background. All methods on `WorldContainer` transparently wait for the
-container to be ready before proceeding. This means multiple containers are
-created concurrently:
+Containers are created asynchronously. All methods on `WorldContainer`
+transparently wait for the container to be ready before proceeding:
 
 ```go
 // These return immediately — both containers are created in parallel
@@ -130,23 +126,15 @@ app := w.NewContainer(appSpec)
 // First method call on each container blocks until it is ready
 db.Wait(wait.ForLog("database system is ready to accept connections"))
 app.Wait(wait.ForHTTP("/healthz").WithPort("8080/tcp"))
-```
-
-Set `Awaited: true` in the spec to make `NewContainer` block until the container
-is fully created (useful when you need the container immediately).
-
-```go
-// Start the container (if not auto-started)
-wc.Start()
 
 // Execute a command (fails test if exit code doesn't match)
-wc.Exec([]string{"echo", "hello"}, 0)
+app.Exec([]string{"curl", "-sf", "http://localhost:8080/healthz"}, 0)
 
-// Wait for a condition
-wc.Wait(wait.ForLog("Server started"))
+// Block until ready without performing any action
+app.Await()
 
 // Copy a file from container to the world log
-wc.LogFile("/var/log/app.log")
+app.LogFile("/var/log/app.log")
 ```
 
 ### Replicas
@@ -157,38 +145,25 @@ replica IPs via Docker DNS round-robin:
 
 ```go
 servers := w.NewContainer(testworld.ContainerSpec{
-    Image:    "caddy:latest",
-    Awaited: true,
-    Started:  true,
-    Replicas: 3,
+    Image:      "caddy:latest",
+    Replicas:   3,
     WaitingFor: wait.ForHTTP("/").WithPort("80/tcp"),
 })
 
-// From another container, the group name resolves to all 3 IPs
-client.Exec([]string{"curl", servers.Name}, 0)
+client := w.NewContainer(testworld.ContainerSpec{
+    Image: "alpine:latest",
+    Cmd:   []string{"sleep", "60"},
+})
+
+// Wait for all servers to be ready
+servers.Await()
+
+// The group name resolves to all 3 server IPs
+client.Exec([]string{"wget", "-q", "-O", "/dev/null", "http://" + servers.Name}, 0)
 ```
 
 Each replica also gets its own unique name (`servers.Name + "-1"`, `-2`, etc.)
 for individual addressing.
-
-### Network Connectivity
-
-Containers can reach each other by name:
-
-```go
-spec := testworld.ContainerSpec{
-    Image:   "alpine:latest",
-    Cmd:     []string{"sleep", "60"},
-    Started: true,
-    Awaited: true,
-}
-
-server := w.NewContainer(spec)
-client := w.NewContainer(spec)
-
-// Client can ping server by container name
-client.Exec([]string{"ping", "-c", "1", server.Name}, 0)
-```
 
 ## World Log
 
@@ -199,13 +174,15 @@ When a log path is provided, the World creates:
 
 Example output:
 ```
-Event Timeline (Total: 2.500s):
+Event Timeline (Total: 3.200s):
 ID  | Process Visualization
 ----|--------------------------------------------------------------------------------
-000 |[####] (0.500s) World: Create
-001 |     [##] (0.200s) World: add orca container
-002 |       [########] (0.800s) TestExample-orca-1: wait
-003 |               [#] (0.100s) TestExample-orca-1: exec varnish-supervisor --version
+000 |[###] (0.500s) World: Create
+001 |    [#####] (0.700s) World: add caddy container TestWebCluster-caddy-1-1
+002 |    [######] (0.800s) World: add caddy container TestWebCluster-caddy-1-2
+003 |    [######] (0.800s) World: add caddy container TestWebCluster-caddy-1-3
+004 |    [####] (0.600s) World: add alpine container TestWebCluster-alpine-1
+005 |              [#] (0.100s) TestWebCluster-alpine-1: exec wget -q -O /dev/null ...
 ```
 
 ## License
