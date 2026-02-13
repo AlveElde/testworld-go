@@ -174,15 +174,24 @@ When a log path is provided, the World creates:
 
 Example output:
 ```
-Event Timeline (Total: 3.200s):
+Event Timeline (Total: 5.896s):
 ID  | Process Visualization
 ----|--------------------------------------------------------------------------------
-000 |[###] (0.500s) World: Create
-001 |    [#####] (0.700s) World: add caddy container TestWebCluster-caddy-1-1
-002 |    [######] (0.800s) World: add caddy container TestWebCluster-caddy-1-2
-003 |    [######] (0.800s) World: add caddy container TestWebCluster-caddy-1-3
-004 |    [####] (0.600s) World: add alpine container TestWebCluster-alpine-1
-005 |              [#] (0.100s) TestWebCluster-alpine-1: exec wget -q -O /dev/null ...
+000 |[########] (0.653s) World: Create
+001 |        [####################] (1.523s) World: add alpine container TestReplicaHTTP-alpine-1
+002 |        [######################] (1.674s) World: add caddy container TestReplicaHTTP-caddy-1-1
+003 |        [######################] (1.682s) World: add caddy container TestReplicaHTTP-caddy-1-3
+004 |        [###########################] (2.061s) World: add caddy container TestReplicaHTTP-caddy-1-2
+005 |                                    [#] (0.106s) TestReplicaHTTP-alpine-1: exec sh -c test "$(nslookup TestReplicaHTTP-caddy-1 | grep 'Address' | grep -cv '127.0.0.11')" -eq 3
+006 |                                      [#] (0.105s) TestReplicaHTTP-alpine-1: exec wget -q -O /dev/null http://TestReplicaHTTP-caddy-1-1:80/
+007 |                                       [#] (0.103s) TestReplicaHTTP-alpine-1: exec wget -q -O /dev/null http://TestReplicaHTTP-caddy-1-2:80/
+008 |                                         [#] (0.103s) TestReplicaHTTP-alpine-1: exec wget -q -O /dev/null http://TestReplicaHTTP-caddy-1-3:80/
+009 |                                          [#####################################] (2.764s) World: destroy
+010 |                                          [#] (0.005s) TestReplicaHTTP-caddy-1-1: logs
+011 |                                                     [#] (0.014s) TestReplicaHTTP-caddy-1-2: logs
+012 |                                                               [#] (0.003s) TestReplicaHTTP-caddy-1-3: logs
+013 |                                                                          [#] (0.002s) TestReplicaHTTP-alpine-1: logs
+
 ```
 
 ## License
