@@ -58,6 +58,7 @@ type pendingContainer struct {
 type WorldContainer struct {
 	world     *World
 	Name      string
+	isReady   bool
 	pending   []*pendingContainer
 	onDestroy func(WorldContainer)
 }
@@ -77,10 +78,15 @@ func (wc *WorldContainer) waitReady() ([]testcontainers.Container, error) {
 
 // mustReady blocks until all replicas are ready and fatals if any creation failed.
 func (wc *WorldContainer) mustReady() []testcontainers.Container {
+	if !wc.isReady {
+		event := wc.world.worldLog.newEvent("%s: await", wc.Name)
+		defer event.finish()
+	}
 	containers, err := wc.waitReady()
 	if err != nil {
 		wc.world.t.Fatalf("Container %s failed to create: %v", wc.Name, err)
 	}
+	wc.isReady = true
 	return containers
 }
 
