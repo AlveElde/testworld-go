@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -167,48 +168,56 @@ func New(t *testing.T, logPath string) *World {
 	return &w
 }
 
+// AwaitAll waits for all containers in the world to be ready.
+func (w *World) AwaitAll() {
+	for _, c := range w.containers {
+		c.Await()
+	}
+}
+
 // Destroy cleans up the testworld.
 func (w *World) Destroy() {
 	if w == nil {
 		return
 	}
 
+	// Wait for all containers to be ready before starting the teardown.
+	w.AwaitAll()
+
 	event := w.worldLog.newEvent("World: destroy")
 
-	// First pass: wait for all container creation goroutines to finish so that
-	// onDestroy callbacks can safely interact with any container in the world.
+	// Destroy all containers concurrently.
+	var wg sync.WaitGroup
 	for _, c := range w.containers {
-		for _, pc := range c.pending {
-			<-pc.ready
-		}
+		wg.Add(1)
+		go func(c WorldContainer) {
+			defer wg.Done()
+
+			if c.onDestroy != nil {
+				c.onDestroy(c)
+			}
+
+			for _, pc := range c.pending {
+				if pc.err != nil {
+					w.t.Log("Container ", pc.name, " failed to create: ", pc.err)
+					continue
+				}
+
+				// Try to collect logs, but don't fail if it doesn't work during cleanup
+				if err := c.logOneInternal(pc.name, pc.container); err != nil {
+					w.t.Log("Failed to collect logs for container ", pc.name, ": ", err)
+				}
+
+				// Terminate the container with a half a second timeout
+				// The default timeout is 10 seconds, after which Docker sends SIGKILL
+				err := pc.container.Terminate(w.ctx, testcontainers.StopTimeout(time.Millisecond*500))
+				if err != nil {
+					w.t.Log("Failed to terminate container ", pc.name, ": ", err)
+				}
+			}
+		}(c)
 	}
-
-	// Second pass: invoke onDestroy while all containers are still running,
-	// then collect logs and terminate.
-	for _, c := range w.containers {
-		if c.onDestroy != nil {
-			c.onDestroy(c)
-		}
-
-		for _, pc := range c.pending {
-			if pc.err != nil {
-				w.t.Log("Container ", pc.name, " failed to create: ", pc.err)
-				continue
-			}
-
-			// Try to collect logs, but don't fail if it doesn't work during cleanup
-			if err := c.logOneInternal(pc.name, pc.container); err != nil {
-				w.t.Log("Failed to collect logs for container ", pc.name, ": ", err)
-			}
-
-			// Terminate the container with a half a second timeout
-			// The default timeout is 10 seconds, after which Docker sends SIGKILL
-			err := pc.container.Terminate(w.ctx, testcontainers.StopTimeout(time.Millisecond*500))
-			if err != nil {
-				w.t.Log("Failed to terminate container ", pc.name, ": ", err)
-			}
-		}
-	}
+	wg.Wait()
 
 	event.finish()
 	w.worldLog.finish()
