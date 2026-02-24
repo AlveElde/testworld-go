@@ -1,6 +1,8 @@
 package testworld
 
 import (
+	"archive/tar"
+	"bytes"
 	"fmt"
 	"strings"
 	"testing"
@@ -460,4 +462,43 @@ func TestReplicaHTTP(t *testing.T) {
 	for _, pc := range servers.pending {
 		client.Exec([]string{"wget", "-q", "-O", "/dev/null", fmt.Sprintf("http://%s:80/", pc.name)}, 0)
 	}
+}
+
+// TestReplicaContextArchive verifies that each replica receives a complete
+// ContextArchive when using FromDockerfile with Replicas > 1. Without the
+// buffering fix, the first replica goroutine to start would exhaust the shared
+// io.ReadSeeker, causing every other replica's image build to fail with an
+// empty context.
+func TestReplicaContextArchive(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	const fileContent = "built from context archive"
+
+	// Build an in-memory tar archive containing a minimal Dockerfile.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	dockerfile := "FROM alpine:latest\nRUN echo '" + fileContent + "' > /tmp/fromarchive.txt\n"
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "Dockerfile",
+		Mode: 0o644,
+		Size: int64(len(dockerfile)),
+	}); err != nil {
+		t.Fatalf("failed to write tar header: %v", err)
+	}
+	if _, err := tw.Write([]byte(dockerfile)); err != nil {
+		t.Fatalf("failed to write tar entry: %v", err)
+	}
+	tw.Close()
+
+	replicas := w.NewContainer(ContainerSpec{
+		FromDockerfile: testcontainers.FromDockerfile{
+			ContextArchive: bytes.NewReader(buf.Bytes()),
+		},
+		Cmd:      []string{"sleep", "60"},
+		Replicas: 3,
+	})
+
+	// All three replicas must contain the file written during image build.
+	replicas.Exec([]string{"grep", "-qF", fileContent, "/tmp/fromarchive.txt"}, 0)
 }

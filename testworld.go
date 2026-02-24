@@ -289,6 +289,18 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 		}
 	}
 
+	// Buffer ContextArchive (io.ReadSeeker) for the same reason: the first
+	// replica goroutine to run would exhaust the reader, leaving every other
+	// replica with an empty archive.
+	var contextArchiveData []byte
+	if spec.FromDockerfile.ContextArchive != nil {
+		data, err := io.ReadAll(spec.FromDockerfile.ContextArchive)
+		if err != nil {
+			w.t.Fatalf("Failed to buffer ContextArchive for container %s: %v", name, err)
+		}
+		contextArchiveData = data
+	}
+
 	for i := range replicas {
 		// For a single replica, the replica name is the group name.
 		// For multiple replicas, each gets a unique suffix.
@@ -317,6 +329,10 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 			}
 		}
 		containerRequest.ContainerRequest.Files = replicaFiles
+
+		if contextArchiveData != nil {
+			containerRequest.ContainerRequest.FromDockerfile.ContextArchive = bytes.NewReader(contextArchiveData)
+		}
 
 		// createFn performs the actual container creation. Event tracking lives
 		// here so the Gantt chart reflects actual creation time.
