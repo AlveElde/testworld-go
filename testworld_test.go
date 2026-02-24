@@ -226,6 +226,49 @@ func TestNetworkConnectivity(t *testing.T) {
 	wc1.Exec([]string{"ping", "-c", "1", wc2.Name}, 0)
 }
 
+// TestIsolatedContainerCommunicatesWithTestworld tests that an isolated
+// container can communicate with other containers in the same testworld
+// (both isolated→regular and regular→isolated directions).
+func TestIsolatedContainerCommunicatesWithTestworld(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	regular := w.NewContainer(ContainerSpec{
+		Image: "alpine:latest",
+		Cmd:   []string{"sleep", "60"},
+	})
+
+	isolated := w.NewContainer(ContainerSpec{
+		Image:    "alpine:latest",
+		Cmd:      []string{"sleep", "60"},
+		Isolated: true,
+	})
+
+	// Isolated container can reach the regular container by name.
+	isolated.Exec([]string{"ping", "-c", "1", regular.Name}, 0)
+
+	// Regular container can reach the isolated container by name.
+	regular.Exec([]string{"ping", "-c", "1", isolated.Name}, 0)
+}
+
+// TestIsolatedContainerNoInternet tests that an isolated container cannot
+// reach the internet (no default gateway on the internal network).
+func TestIsolatedContainerNoInternet(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	isolated := w.NewContainer(ContainerSpec{
+		Image:    "alpine:latest",
+		Cmd:      []string{"sleep", "60"},
+		Isolated: true,
+	})
+
+	// 8.8.8.8 is normally reachable from a Docker container. On an internal
+	// network there is no default gateway, so ping exits immediately with
+	// "Network unreachable" (exit code 1).
+	isolated.Exec([]string{"ping", "-c", "1", "-W", "2", "8.8.8.8"}, 1)
+}
+
 // TestReplicas tests that creating a container with Replicas > 1
 // creates the correct number of replicas with unique names.
 func TestReplicas(t *testing.T) {

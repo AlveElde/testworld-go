@@ -12,6 +12,11 @@ type ContainerSpec struct {
 	// If FromDockerfile is set, this is ignored.
 	Image string
 
+	// Isolated blocks internet access for this container. The container can
+	// still communicate with other containers in the same testworld, but all
+	// traffic to external networks is dropped.
+	Isolated bool
+
 	// FromDockerfile allows building an image from a Dockerfile.
 	FromDockerfile testcontainers.FromDockerfile
 
@@ -54,15 +59,28 @@ type ContainerSpec struct {
 }
 
 // toGenericContainerRequest converts a ContainerSpec to a testcontainers.GenericContainerRequest.
-func (spec ContainerSpec) toGenericContainerRequest(name, networkName string, aliases []string) testcontainers.GenericContainerRequest {
+// All containers join the internal network so they can communicate with each other via DNS.
+// Non-isolated containers also join the external network, gaining internet access.
+// Isolated containers join only the internal network, blocking internet access.
+func (spec ContainerSpec) toGenericContainerRequest(name, externalNetwork, internalNetwork string, aliases []string) testcontainers.GenericContainerRequest {
+	var networks []string
+	networkAliases := map[string][]string{internalNetwork: aliases}
+
+	if spec.Isolated {
+		networks = []string{internalNetwork}
+	} else {
+		networks = []string{externalNetwork, internalNetwork}
+		networkAliases[externalNetwork] = aliases
+	}
+
 	return testcontainers.GenericContainerRequest{
 		Started: true,
 		ContainerRequest: testcontainers.ContainerRequest{
 			FromDockerfile:     spec.FromDockerfile,
 			Image:              spec.Image,
 			Name:               name,
-			Networks:           []string{networkName},
-			NetworkAliases:     map[string][]string{networkName: aliases},
+			Networks:           networks,
+			NetworkAliases:     networkAliases,
 			Entrypoint:         spec.Entrypoint,
 			Cmd:                spec.Cmd,
 			Env:                spec.Env,

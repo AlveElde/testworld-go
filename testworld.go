@@ -39,7 +39,8 @@ type World struct {
 	ctx            context.Context
 	t              *testing.T
 	worldLog       *WorldLog
-	cn             *testcontainers.DockerNetwork
+	cn             *testcontainers.DockerNetwork // external: bridge with internet access
+	icn            *testcontainers.DockerNetwork // internal: no internet, shared by all containers
 	containers     map[string]WorldContainer
 	containerKinds map[string]int
 }
@@ -136,7 +137,7 @@ func New(t *testing.T, logPath string) *World {
 	event := w.worldLog.newEvent("World: Create")
 	defer event.finish()
 
-	// Create a container network for the test.
+	// Create the external network (regular bridge with internet access).
 	cn, err := network.New(w.ctx,
 		network.WithDriver("bridge"),
 		network.WithAttachable(),
@@ -147,6 +148,21 @@ func New(t *testing.T, logPath string) *World {
 		t.Fatalf("Failed to create network: %v", err)
 	}
 	w.cn = cn
+
+	// Create the internal network (no internet access). All containers join
+	// this network so they can communicate with each other regardless of
+	// isolation. Isolated containers join only this network.
+	icn, err := network.New(w.ctx,
+		network.WithDriver("bridge"),
+		network.WithAttachable(),
+		network.WithInternal(),
+	)
+	testcontainers.CleanupNetwork(t, icn)
+	if err != nil {
+		w.Destroy()
+		t.Fatalf("Failed to create internal network: %v", err)
+	}
+	w.icn = icn
 
 	return &w
 }
@@ -255,7 +271,7 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 		}
 		pending[i] = pc
 
-		containerRequest := spec.toGenericContainerRequest(replicaName, w.cn.Name, aliases)
+		containerRequest := spec.toGenericContainerRequest(replicaName, w.cn.Name, w.icn.Name, aliases)
 
 		// createFn performs the actual container creation. Event tracking lives
 		// here so the Gantt chart reflects actual creation time.

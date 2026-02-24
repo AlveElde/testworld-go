@@ -7,8 +7,9 @@
 - **Async**: Containers are created asynchronously, leading to faster tests when more than one container is used.
 - **Test isolation**: Each test creates a separate namespace and docker bridge network.
 - **Replicas**: Create and control groups of identical containers.
+- **Network isolation**: Optionally block a container's internet access while keeping intra-world communication intact.
 - **Low boilerplate**: Reduced boilerplate compared to `testcontainers-go`
-- **Log collection**: Collect logs from all containers and output to a verbose log file. 
+- **Log collection**: Collect logs from all containers and output to a verbose log file.
 - **Event tracking**: Outputs a timeline of events during the test.
 
 ## Installation
@@ -99,6 +100,9 @@ spec := testworld.ContainerSpec{
     // Wait strategy for readiness
     WaitingFor: wait.ForHTTP("/health"),
 
+    // Block internet access (see Network Isolation below)
+    Isolated: true,
+
     // Advanced: modify container config
     ConfigModifier: func(c *container.Config) { ... },
 
@@ -164,6 +168,44 @@ client.Exec([]string{"wget", "-q", "-O", "/dev/null", "http://" + servers.Name},
 
 Each replica also gets its own unique name (`servers.Name + "-1"`, `-2`, etc.)
 for individual addressing.
+
+## Network Isolation
+
+Set `Isolated: true` on a `ContainerSpec` to block that container's access to
+the internet while keeping intra-world communication intact.
+
+Internally, testworld maintains two Docker bridge networks:
+
+| Network | Internet | Intra-world |
+|---------|----------|-------------|
+| External (regular bridge) | yes | yes |
+| Internal (`--internal` bridge) | no | yes |
+
+Every container joins the internal network. Non-isolated containers also join
+the external network, gaining internet access via its gateway. Isolated
+containers join only the internal network — Docker omits the default gateway
+for `--internal` networks, so any attempt to reach an external address fails
+immediately with "Network unreachable".
+
+```go
+// A mock server that should never call out to the real internet
+mock := w.NewContainer(testworld.ContainerSpec{
+    Image:    "my-mock-server:latest",
+    Isolated: true,
+})
+
+// A regular client that can reach both the internet and the mock server
+client := w.NewContainer(testworld.ContainerSpec{
+    Image: "alpine:latest",
+    Cmd:   []string{"sleep", "60"},
+})
+
+// The client can reach the mock server by name
+client.Exec([]string{"wget", "-q", "-O", "/dev/null", "http://" + mock.Name + ":8080/"}, 0)
+
+// The mock server cannot reach the internet
+mock.Exec([]string{"ping", "-c", "1", "-W", "2", "8.8.8.8"}, 1)
+```
 
 ## World Log
 
