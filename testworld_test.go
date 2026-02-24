@@ -222,6 +222,7 @@ func TestDestroyAwaitsContainers(t *testing.T) {
 		Cmd:   []string{"sleep", "30"},
 		OnDestroy: func(wc WorldContainer) {
 			onDestroyCalled = true
+			wc.Exec([]string{"echo", "onDestroy called"}, 0)
 			for _, pc := range wc.pending {
 				select {
 				case <-pc.ready:

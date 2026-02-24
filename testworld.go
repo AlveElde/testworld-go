@@ -175,11 +175,22 @@ func (w *World) Destroy() {
 
 	event := w.worldLog.newEvent("World: destroy")
 
+	// First pass: wait for all container creation goroutines to finish so that
+	// onDestroy callbacks can safely interact with any container in the world.
 	for _, c := range w.containers {
 		for _, pc := range c.pending {
-			// Wait for the container to be created before destorying it.
 			<-pc.ready
+		}
+	}
 
+	// Second pass: invoke onDestroy while all containers are still running,
+	// then collect logs and terminate.
+	for _, c := range w.containers {
+		if c.onDestroy != nil {
+			c.onDestroy(c)
+		}
+
+		for _, pc := range c.pending {
 			if pc.err != nil {
 				w.t.Log("Container ", pc.name, " failed to create: ", pc.err)
 				continue
@@ -196,10 +207,6 @@ func (w *World) Destroy() {
 			if err != nil {
 				w.t.Log("Failed to terminate container ", pc.name, ": ", err)
 			}
-		}
-
-		if c.onDestroy != nil {
-			c.onDestroy(c)
 		}
 	}
 
