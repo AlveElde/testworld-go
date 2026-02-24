@@ -3,6 +3,7 @@ package testworld
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,7 +24,6 @@ type WorldLog struct {
 }
 
 type Event struct {
-	world       *World
 	id          int64
 	description string
 	startTime   time.Time
@@ -92,7 +92,7 @@ func (el *WorldLog) finish() error {
 		}
 	}
 
-	el.world.t.Log("World destroyed, event logs written to ", el.combinedLogPath)
+	log.Printf("🌍 World destroyed, logs written to %s", el.combinedLogPath)
 	return nil
 }
 
@@ -140,7 +140,6 @@ func (el *WorldLog) newEvent(fomat string, args ...any) *Event {
 	// Create and store a new event
 	el.rw.Lock()
 	event := &Event{
-		world:     el.world,
 		id:        el.eventCounter,
 		startTime: now,
 	}
@@ -149,7 +148,6 @@ func (el *WorldLog) newEvent(fomat string, args ...any) *Event {
 	el.rw.Unlock()
 
 	event.description = fmt.Sprintf(fomat, args...)
-	message := fmt.Sprintf("Event %03d start:  %s", event.id, event.description)
 
 	// Create a new temporary log file for the event.
 	var err error
@@ -158,11 +156,8 @@ func (el *WorldLog) newEvent(fomat string, args ...any) *Event {
 		return nil
 	}
 
-	fmt.Fprintln(event.log, message)
-
-	// Log to the go test log as well
-	event.world.t.Helper()
-	event.world.t.Log(message)
+	fmt.Fprintf(event.log, "Event %03d start: %s\n", event.id, event.description)
+	log.Printf("🌍 %s", event.description)
 
 	return event
 }
@@ -175,12 +170,7 @@ func (event *Event) finish() {
 
 	event.finishTime = time.Now()
 	duration := event.finishTime.Sub(event.startTime).Seconds()
-	message := fmt.Sprintf("Event %03d finish: duration %.3fs", event.id, duration)
-	fmt.Fprintln(event.log, message)
-
-	// Log to the go test log as well
-	event.world.t.Helper()
-	event.world.t.Log(message)
+	fmt.Fprintf(event.log, "Event %03d finish: duration %.3fs\n", event.id, duration)
 
 	event.log.Close()
 }
