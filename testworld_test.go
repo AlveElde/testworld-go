@@ -208,6 +208,40 @@ func TestContainerOnDestroy(t *testing.T) {
 	}
 }
 
+// TestDestroyAwaitsContainers verifies that Destroy waits for all container
+// creation goroutines to finish before invoking onDestroy callbacks.
+// It calls Destroy immediately after NewContainer (without Await) and checks
+// inside onDestroy that every pending channel is already closed — meaning the
+// first await-pass in Destroy completed before the cleanup-pass began.
+func TestDestroyAwaitsContainers(t *testing.T) {
+	w := New(t, "./logs")
+
+	onDestroyCalled := false
+	w.NewContainer(ContainerSpec{
+		Image: "alpine:latest",
+		Cmd:   []string{"sleep", "30"},
+		OnDestroy: func(wc WorldContainer) {
+			onDestroyCalled = true
+			for _, pc := range wc.pending {
+				select {
+				case <-pc.ready:
+					// Channel already closed: creation finished before onDestroy.
+				default:
+					t.Errorf("container %s not ready when onDestroy was called", pc.name)
+				}
+			}
+		},
+	})
+
+	// Destroy immediately without calling Await — Destroy must drain all
+	// pending channels before invoking the onDestroy callback.
+	w.Destroy()
+
+	if !onDestroyCalled {
+		t.Error("Expected onDestroy to be called")
+	}
+}
+
 // TestNetworkConnectivity tests that containers in the same world can communicate.
 func TestNetworkConnectivity(t *testing.T) {
 	w := New(t, "./logs")

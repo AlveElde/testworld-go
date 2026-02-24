@@ -177,7 +177,9 @@ func (w *World) Destroy() {
 
 	for _, c := range w.containers {
 		for _, pc := range c.pending {
+			// Wait for the container to be created before destorying it.
 			<-pc.ready
+
 			if pc.err != nil {
 				w.t.Log("Container ", pc.name, " failed to create: ", pc.err)
 				continue
