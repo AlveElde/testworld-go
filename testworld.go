@@ -1,6 +1,7 @@
 package testworld
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -274,6 +275,20 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 	// Add the container to the world synchronously so Destroy() can find it
 	w.containers[name] = wc
 
+	// Buffer any io.Reader-based file contents once before spawning replica
+	// goroutines. An io.Reader can only be consumed once, so each replica must
+	// get its own independent bytes.Reader over the same underlying bytes.
+	fileContents := make([][]byte, len(spec.Files))
+	for i, f := range spec.Files {
+		if f.Reader != nil {
+			data, err := io.ReadAll(f.Reader)
+			if err != nil {
+				w.t.Fatalf("Failed to buffer file %q for container %s: %v", f.ContainerFilePath, name, err)
+			}
+			fileContents[i] = data
+		}
+	}
+
 	for i := range replicas {
 		// For a single replica, the replica name is the group name.
 		// For multiple replicas, each gets a unique suffix.
@@ -291,6 +306,17 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 		pending[i] = pc
 
 		containerRequest := spec.toGenericContainerRequest(replicaName, w.cn.Name, w.icn.Name, aliases)
+
+		// Give this replica its own readers so goroutines don't race over
+		// shared io.Reader state. HostFilePath-based files are unaffected.
+		replicaFiles := make([]testcontainers.ContainerFile, len(spec.Files))
+		copy(replicaFiles, spec.Files)
+		for j, data := range fileContents {
+			if data != nil {
+				replicaFiles[j].Reader = bytes.NewReader(data)
+			}
+		}
+		containerRequest.ContainerRequest.Files = replicaFiles
 
 		// createFn performs the actual container creation. Event tracking lives
 		// here so the Gantt chart reflects actual creation time.

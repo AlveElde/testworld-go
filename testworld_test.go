@@ -2,9 +2,11 @@ package testworld
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	testcontainers "github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
@@ -302,6 +304,34 @@ func TestIsolatedContainerNoInternet(t *testing.T) {
 	// network there is no default gateway, so ping exits immediately with
 	// "Network unreachable" (exit code 1).
 	isolated.Exec([]string{"ping", "-c", "1", "-W", "2", "8.8.8.8"}, 1)
+}
+
+// TestReplicaFileReaders verifies that each replica receives the complete
+// contents of every io.Reader-based ContainerFile. Without the buffering fix,
+// the first replica goroutine to start would exhaust the shared reader,
+// leaving every other replica with an empty file.
+func TestReplicaFileReaders(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	const fileContent = "hello from testworld"
+
+	replicas := w.NewContainer(ContainerSpec{
+		Image:    "alpine:latest",
+		Cmd:      []string{"sleep", "60"},
+		Replicas: 3,
+		Files: []testcontainers.ContainerFile{
+			{
+				Reader:            strings.NewReader(fileContent),
+				ContainerFilePath: "/tmp/testfile.txt",
+				FileMode:          0o644,
+			},
+		},
+	})
+
+	// All three replicas must contain the full file content. An empty file
+	// would cause grep to exit 1, failing the test.
+	replicas.Exec([]string{"grep", "-qF", fileContent, "/tmp/testfile.txt"}, 0)
 }
 
 // TestReplicas tests that creating a container with Replicas > 1
