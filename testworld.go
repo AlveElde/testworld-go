@@ -66,7 +66,6 @@ type WorldContainer struct {
 	onDestroy func(WorldContainer)
 }
 
-
 // New creates a new testworld. w.Destroy() should be deferred right after
 // calling this function. If logPath is not empty, a world log will be
 // created in the specified directory.
@@ -229,6 +228,9 @@ func (wc *WorldContainer) logOneInternal(name string, container testcontainers.C
 func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 	// Derive kind from image name, or dockerfile context as fallback
 	kind := basename(spec.Image)
+	if kind == "" {
+		kind = spec.FromDockerfile.Repo
+	}
 	if kind == "" {
 		kind = basename(spec.FromDockerfile.Context)
 	}
