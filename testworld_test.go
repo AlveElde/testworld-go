@@ -61,14 +61,12 @@ func TestNewContainer(t *testing.T) {
 		t.Error("Expected container name to be non-empty")
 	}
 
-	containers, err := wc.waitReady()
-	if err != nil {
-		t.Fatalf("Expected container creation to succeed: %v", err)
+	wc.Await()
+
+	if len(wc.pending) != 1 {
+		t.Errorf("Expected 1 container, got %d", len(wc.pending))
 	}
-	if len(containers) != 1 {
-		t.Errorf("Expected 1 container, got %d", len(containers))
-	}
-	if containers[0] == nil {
+	if wc.pending[0].container == nil {
 		t.Error("Expected container to be non-nil")
 	}
 
@@ -356,14 +354,7 @@ func TestReplicas(t *testing.T) {
 	}
 
 	// Wait for all replicas to be created
-	containers, err := wc.waitReady()
-	if err != nil {
-		t.Fatalf("Expected replica creation to succeed: %v", err)
-	}
-
-	if len(containers) != 3 {
-		t.Fatalf("Expected 3 containers, got %d", len(containers))
-	}
+	wc.Await()
 
 	// Verify each replica has a unique name with the right suffix
 	for i, pc := range wc.pending {
