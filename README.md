@@ -42,8 +42,8 @@ func TestWebCluster(t *testing.T) {
     })
 
     client := w.NewContainer(testworld.ContainerSpec{
-        Image: "alpine:latest",
-        Cmd:   []string{"sleep", "60"},
+        Image:     "alpine:latest",
+        KeepAlive: true,
     })
 
     // Wait for all servers to be ready
@@ -79,11 +79,14 @@ spec := testworld.ContainerSpec{
     // Create multiple identical containers as a group (default: 1)
     Replicas: 3,
 
+    // Keep the container running indefinitely (uses "sleep infinity" when no Cmd is set)
+    KeepAlive: true,
+
     // Override entrypoint
     Entrypoint: []string{"/entrypoint.sh"},
 
-    // Command to run
-    Cmd: []string{"sleep", "30"},
+    // Command to run (overrides KeepAlive)
+    Cmd: []string{"myapp", "--config", "/etc/myapp.conf"},
 
     // Environment variables
     Env: map[string]string{"DEBUG": "true"},
@@ -155,8 +158,8 @@ servers := w.NewContainer(testworld.ContainerSpec{
 })
 
 client := w.NewContainer(testworld.ContainerSpec{
-    Image: "alpine:latest",
-    Cmd:   []string{"sleep", "60"},
+    Image:     "alpine:latest",
+    KeepAlive: true,
 })
 
 // Wait for all servers to be ready
@@ -196,8 +199,8 @@ mock := w.NewContainer(testworld.ContainerSpec{
 
 // A regular client that can reach both the internet and the mock server
 client := w.NewContainer(testworld.ContainerSpec{
-    Image: "alpine:latest",
-    Cmd:   []string{"sleep", "60"},
+    Image:     "alpine:latest",
+    KeepAlive: true,
 })
 
 // The client can reach the mock server by name

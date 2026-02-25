@@ -30,6 +30,10 @@ type ContainerSpec struct {
 	// Entrypoint overrides the container's default entrypoint
 	Entrypoint []string
 
+	// KeepAlive keeps the container running indefinitely. When set and no Cmd
+	// is provided, "sleep infinity" is used as the command.
+	KeepAlive bool
+
 	// Cmd is the command to run in the container
 	Cmd []string
 
@@ -73,6 +77,11 @@ func (spec ContainerSpec) toGenericContainerRequest(name, externalNetwork, inter
 		networkAliases[externalNetwork] = aliases
 	}
 
+	cmd := spec.Cmd
+	if spec.KeepAlive && len(cmd) == 0 {
+		cmd = []string{"sleep", "infinity"}
+	}
+
 	return testcontainers.GenericContainerRequest{
 		Started: true,
 		ContainerRequest: testcontainers.ContainerRequest{
@@ -82,7 +91,7 @@ func (spec ContainerSpec) toGenericContainerRequest(name, externalNetwork, inter
 			Networks:           networks,
 			NetworkAliases:     networkAliases,
 			Entrypoint:         spec.Entrypoint,
-			Cmd:                spec.Cmd,
+			Cmd:                cmd,
 			Env:                spec.Env,
 			ExposedPorts:       spec.ExposedPorts,
 			Tmpfs:              spec.Tmpfs,
