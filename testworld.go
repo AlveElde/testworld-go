@@ -172,24 +172,29 @@ func (w *World) Destroy() {
 				c.onDestroy(c)
 			}
 
+			var pwg sync.WaitGroup
 			for _, pc := range c.pending {
-				if pc.err != nil {
-					w.t.Log("Container ", pc.name, " failed to create: ", pc.err)
-					continue
-				}
+				pwg.Add(1)
+				go func(pc *pendingContainer) {
+					defer pwg.Done()
+					if pc.err != nil {
+						w.t.Log("Container ", pc.name, " failed to create: ", pc.err)
+						return
+					}
 
-				// Try to collect logs, but don't fail if it doesn't work during cleanup
-				if err := c.logOneInternal(pc.name, pc.container); err != nil {
-					w.t.Log("Failed to collect logs for container ", pc.name, ": ", err)
-				}
+					// Try to collect logs, but don't fail if it doesn't work during cleanup
+					if err := c.logOneInternal(pc.name, pc.container); err != nil {
+						w.t.Log("Failed to collect logs for container ", pc.name, ": ", err)
+					}
 
-				// Terminate the container with a half a second timeout
-				// The default timeout is 10 seconds, after which Docker sends SIGKILL
-				err := pc.container.Terminate(w.ctx, testcontainers.StopTimeout(time.Millisecond*500))
-				if err != nil {
-					w.t.Log("Failed to terminate container ", pc.name, ": ", err)
-				}
+					// Terminate the container with a half a second timeout
+					// The default timeout is 10 seconds, after which Docker sends SIGKILL
+					if err := pc.container.Terminate(w.ctx, testcontainers.StopTimeout(time.Millisecond*500)); err != nil {
+						w.t.Log("Failed to terminate container ", pc.name, ": ", err)
+					}
+				}(pc)
 			}
+			pwg.Wait()
 		}(c)
 	}
 	wg.Wait()

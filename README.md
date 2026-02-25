@@ -1,6 +1,6 @@
 # testworld-go
 
-`testworld-go` is a system test framework based on `testcontainers-go`. Testcontainers is very flexible, but needs a lot of boilerplate for every test. Testworld cuts down on the boilerplate with an opinionated approach.
+`testworld-go` is a system test framework based on [testcontainers-go](https://github.com/testcontainers/testcontainers-go). Testcontainers is very flexible, but needs a lot of boilerplate for every test. Testworld cuts down on the boilerplate with an opinionated approach.
 
 ## Features
 
@@ -219,24 +219,29 @@ When a log path is provided, the World creates:
 
 Example output:
 ```
-Event Timeline (Total: 5.896s):
+Event Timeline (Total: 3.284s):
 ID  | Process Visualization
 ----|--------------------------------------------------------------------------------
-000 |[########] (0.653s) World: Create
-001 |        [####################] (1.523s) World: add alpine container TestReplicaHTTP-alpine-1
-002 |        [######################] (1.674s) World: add caddy container TestReplicaHTTP-caddy-1-1
-003 |        [######################] (1.682s) World: add caddy container TestReplicaHTTP-caddy-1-3
-004 |        [###########################] (2.061s) World: add caddy container TestReplicaHTTP-caddy-1-2
-005 |                                    [#] (0.106s) TestReplicaHTTP-alpine-1: exec sh -c test "$(nslookup TestReplicaHTTP-caddy-1 | grep 'Address' | grep -cv '127.0.0.11')" -eq 3
-006 |                                      [#] (0.105s) TestReplicaHTTP-alpine-1: exec wget -q -O /dev/null http://TestReplicaHTTP-caddy-1-1:80/
-007 |                                       [#] (0.103s) TestReplicaHTTP-alpine-1: exec wget -q -O /dev/null http://TestReplicaHTTP-caddy-1-2:80/
-008 |                                         [#] (0.103s) TestReplicaHTTP-alpine-1: exec wget -q -O /dev/null http://TestReplicaHTTP-caddy-1-3:80/
-009 |                                          [#####################################] (2.764s) World: destroy
-010 |                                          [#] (0.005s) TestReplicaHTTP-caddy-1-1: logs
-011 |                                                     [#] (0.014s) TestReplicaHTTP-caddy-1-2: logs
-012 |                                                               [#] (0.003s) TestReplicaHTTP-caddy-1-3: logs
-013 |                                                                          [#] (0.002s) TestReplicaHTTP-alpine-1: logs
-
+000 |[################] (0.672s) World: Create
+001 |                [#############################] (1.199s) World: add caddy container TestReplicaHTTPClients-caddy-1-1
+002 |                [#############################] (1.210s) TestReplicaHTTPClients-caddy-1: await
+003 |                [############################] (1.173s) World: add caddy container TestReplicaHTTPClients-caddy-1-2
+004 |                [###########################] (1.121s) World: add curl container TestReplicaHTTPClients-curl-1-1
+005 |                [#############################] (1.210s) World: add caddy container TestReplicaHTTPClients-caddy-1-3
+006 |                [######################] (0.941s) World: add curl container TestReplicaHTTPClients-curl-1-2
+007 |                [###################] (0.804s) World: add curl container TestReplicaHTTPClients-curl-1-3
+008 |                                             [##] (0.102s) TestReplicaHTTPClients-curl-1-3: exec curl http://TestReplicaHTTPClients-caddy-1:80/
+009 |                                             [##] (0.102s) TestReplicaHTTPClients-curl-1-1: exec curl http://TestReplicaHTTPClients-caddy-1:80/
+010 |                                             [##] (0.102s) TestReplicaHTTPClients-curl-1-2: exec curl http://TestReplicaHTTPClients-caddy-1:80/
+011 |                                                [#] (0.000s) TestReplicaHTTPClients-caddy-1: await
+012 |                                                [#] (0.000s) TestReplicaHTTPClients-curl-1: await
+013 |                                                [###############################] (1.300s) World: destroy
+014 |                                                [#] (0.003s) TestReplicaHTTPClients-curl-1-3: logs
+015 |                                                [#] (0.003s) TestReplicaHTTPClients-curl-1-1: logs
+016 |                                                [#] (0.005s) TestReplicaHTTPClients-caddy-1-3: logs
+017 |                                                [#] (0.005s) TestReplicaHTTPClients-curl-1-2: logs
+018 |                                                [#] (0.006s) TestReplicaHTTPClients-caddy-1-1: logs
+019 |                                                [#] (0.005s) TestReplicaHTTPClients-caddy-1-2: logs
 ```
 
 ## License

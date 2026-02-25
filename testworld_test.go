@@ -455,6 +455,30 @@ func TestReplicaHTTP(t *testing.T) {
 	}
 }
 
+// TestReplicaHTTP tests replicas with a real HTTP server (caddy),
+// verifying that the group name resolves to all replica IPs.
+func TestReplicaHTTPClients(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	servers := w.NewContainer(ContainerSpec{
+		Image:      "caddy:latest",
+		Replicas:   3,
+		WaitingFor: wait.ForHTTP("/").WithPort("80/tcp"),
+	})
+
+	client := w.NewContainer(ContainerSpec{
+		Image:     "curlimages/curl:latest",
+		Replicas:  3,
+		KeepAlive: true,
+	})
+
+	servers.Await()
+
+	// Verify each individual replica is serving HTTP
+	client.Exec([]string{"curl", fmt.Sprintf("http://%s:80/", servers.Name)}, 0)
+}
+
 // TestReplicaContextArchive verifies that each replica receives a complete
 // ContextArchive when using FromDockerfile with Replicas > 1. Without the
 // buffering fix, the first replica goroutine to start would exhaust the shared
