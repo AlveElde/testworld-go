@@ -62,6 +62,16 @@ type ContainerSpec struct {
 	// WaitingFor is the strategy to wait for the container to be ready.
 	WaitingFor wait.Strategy
 
+	// Requires declares that this container depends on the listed containers
+	// being ready before creation starts. If any dependency fails, this
+	// container also fails without being created.
+	Requires []WorldContainer
+
+	// After is like Requires but only delays method calls (Await, Exec, etc.),
+	// not container creation. The container is created in parallel with its
+	// After dependencies, but any method blocks until they are ready.
+	After []WorldContainer
+
 	// OnDestroy is a callback function that is called before the container is terminated.
 	OnDestroy func(WorldContainer)
 }

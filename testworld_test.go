@@ -333,6 +333,53 @@ func TestAliases(t *testing.T) {
 	client.Exec([]string{"ping", "-c", "1", server.Name}, 0)
 }
 
+// TestRequires tests that a container with Requires waits for its
+// dependency to be ready before being created.
+func TestRequires(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	dep := w.NewContainer(ContainerSpec{
+		Image: "alpine:latest",
+		Cmd:   []string{"sleep", "60"},
+	})
+
+	// The dependent container starts only after dep is ready, so it can
+	// resolve dep's DNS name during creation.
+	dependent := w.NewContainer(ContainerSpec{
+		Image:     "alpine:latest",
+		KeepAlive: true,
+		Requires:  []WorldContainer{dep},
+	})
+
+	// If Requires works, the dependent container was created after dep
+	// was ready, so it can ping dep by name.
+	dependent.Exec([]string{"ping", "-c", "1", dep.Name}, 0)
+}
+
+// TestAfter tests that a container with After is created in parallel with
+// its dependency, but methods block until the dependency is ready.
+func TestAfter(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	server := w.NewContainer(ContainerSpec{
+		Image: "alpine:latest",
+		Cmd:   []string{"sleep", "60"},
+	})
+
+	// Both containers are created in parallel, but Exec on client
+	// blocks until server is ready.
+	client := w.NewContainer(ContainerSpec{
+		Image:     "alpine:latest",
+		KeepAlive: true,
+		After:     []WorldContainer{server},
+	})
+
+	// This Exec implicitly waits for server to be ready via After.
+	client.Exec([]string{"ping", "-c", "1", server.Name}, 0)
+}
+
 // TestReplicaFileReaders verifies that each replica receives the complete
 // contents of every io.Reader-based ContainerFile. Without the buffering fix,
 // the first replica goroutine to start would exhaust the shared reader,

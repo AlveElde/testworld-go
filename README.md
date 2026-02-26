@@ -44,12 +44,11 @@ func TestWebCluster(t *testing.T) {
     client := w.NewContainer(testworld.ContainerSpec{
         Image:     "alpine:latest",
         KeepAlive: true,
+        After:     []testworld.WorldContainer{servers},
     })
 
-    // Wait for all servers to be ready
-    servers.Await()
-
-    // The group name resolves to all 3 server IPs via DNS round-robin
+    // The group name resolves to all 3 server IPs via DNS round-robin.
+    // After ensures servers are ready before Exec runs.
     client.Exec([]string{"wget", "-q", "-O", "/dev/null", "http://" + servers.Name}, 0)
 }
 ```
@@ -103,8 +102,14 @@ spec := testworld.ContainerSpec{
     // Wait strategy for readiness
     WaitingFor: wait.ForHTTP("/health"),
 
-    // Extra DNS aliases 
+    // Extra DNS aliases
     Aliases: []string{"db", "primary"},
+
+    // Block creation until dependencies are ready (see Dependencies below)
+    Requires: []testworld.WorldContainer{db},
+
+    // Create in parallel, but block methods until dependencies are ready
+    After: []testworld.WorldContainer{db},
 
     // Block internet access (see Network Isolation below)
     Isolated: true,
@@ -163,17 +168,59 @@ servers := w.NewContainer(testworld.ContainerSpec{
 client := w.NewContainer(testworld.ContainerSpec{
     Image:     "alpine:latest",
     KeepAlive: true,
+    After:     []testworld.WorldContainer{servers},
 })
 
-// Wait for all servers to be ready
-servers.Await()
-
-// The group name resolves to all 3 server IPs
+// The group name resolves to all 3 server IPs.
+// After ensures servers are ready before Exec runs.
 client.Exec([]string{"wget", "-q", "-O", "/dev/null", "http://" + servers.Name}, 0)
 ```
 
 Each replica also gets its own unique name (`servers.Name + "-1"`, `-2`, etc.)
 for individual addressing.
+
+## Dependencies
+
+Use `Requires` and `After` to declare ordering between containers:
+
+| Field | Creation | Methods (Exec, Await, ...) |
+|-------|----------|----------------------------|
+| `Requires` | Waits for deps | Waits for deps |
+| `After` | Runs in parallel | Waits for deps |
+
+**`After`** is the common choice — containers are created in parallel for speed,
+but methods block until dependencies are ready:
+
+```go
+db := w.NewContainer(testworld.ContainerSpec{
+    Image:      "postgres:latest",
+    WaitingFor: wait.ForLog("ready to accept connections"),
+})
+
+app := w.NewContainer(testworld.ContainerSpec{
+    Image: "myapp:latest",
+    After: []testworld.WorldContainer{db},
+})
+
+// Both containers are created in parallel.
+// Exec blocks until db is ready.
+app.Exec([]string{"curl", "-sf", "http://localhost:8080/healthz"}, 0)
+```
+
+**`Requires`** delays creation itself, useful when a container can't be built
+without the dependency (e.g., pulling from a registry that another container
+provides):
+
+```go
+registry := w.NewContainer(registrySpec)
+
+app := w.NewContainer(testworld.ContainerSpec{
+    Image:    "myregistry:5000/myapp:latest",
+    Requires: []testworld.WorldContainer{registry},
+})
+```
+
+If any dependency fails, containers that depend on it also fail.
 
 ## Network Isolation
 
@@ -204,6 +251,7 @@ mock := w.NewContainer(testworld.ContainerSpec{
 client := w.NewContainer(testworld.ContainerSpec{
     Image:     "alpine:latest",
     KeepAlive: true,
+    After:     []testworld.WorldContainer{mock},
 })
 
 // The client can reach the mock server by name

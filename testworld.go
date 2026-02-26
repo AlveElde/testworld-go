@@ -318,6 +318,18 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 		// createFn performs the actual container creation. Event tracking lives
 		// here so the Gantt chart reflects actual creation time.
 		createFn := func() {
+			// Wait for dependencies to be ready before creating this container.
+			for _, dep := range spec.Requires {
+				for _, dpc := range dep.pending {
+					<-dpc.ready
+					if dpc.err != nil {
+						pc.err = fmt.Errorf("dependency %s failed: %w", dep.Name, dpc.err)
+						close(pc.ready)
+						return
+					}
+				}
+			}
+
 			event := w.worldLog.newEvent("World: add %s container %s", kind, replicaName)
 			defer event.finish()
 
