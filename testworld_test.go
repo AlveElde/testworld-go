@@ -591,3 +591,93 @@ func TestReplicaContextArchive(t *testing.T) {
 	// All three replicas must contain the file written during image build.
 	replicas.Exec([]string{"grep", "-qF", fileContent, "/tmp/fromarchive.txt"}, 0)
 }
+
+// TestTLS verifies that every container receives TLS certificates and the
+// world CA is trusted, allowing HTTPS connections without extra flags.
+func TestTLS(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	caddyfile := `{
+	auto_https off
+}
+:8443 {
+	tls /tls/cert.pem /tls/key.pem
+	respond "Hello TLS"
+}`
+
+	server := w.NewContainer(ContainerSpec{
+		Image: "caddy:latest",
+		Files: []testcontainers.ContainerFile{
+			{
+				Reader:            strings.NewReader(caddyfile),
+				ContainerFilePath: "/etc/caddy/Caddyfile",
+				FileMode:          0o644,
+			},
+		},
+		ExposedPorts: []string{"8443/tcp"},
+		WaitingFor:   wait.ForLog("serving initial configuration"),
+	})
+
+	client := w.NewContainer(ContainerSpec{
+		Image:     "alpine/curl:latest",
+		KeepAlive: true,
+		Requires:  []WorldContainer{server},
+	})
+
+	// Verify the cert files and env vars are present.
+	client.Exec([]string{"test", "-f", TLSCACertPath}, 0)
+	client.Exec([]string{"test", "-f", TLSCertPath}, 0)
+	client.Exec([]string{"test", "-f", TLSKeyPath}, 0)
+	client.Exec([]string{"sh", "-c", `[ "$TLS_CA_CERT" = "` + TLSCACertPath + `" ]`}, 0)
+
+	// Connect over HTTPS — the CA is trusted via the OS trust store,
+	// no --cacert needed.
+	client.Exec([]string{
+		"curl", "-sf",
+		fmt.Sprintf("https://%s:8443/", server.Name),
+	}, 0)
+}
+
+// TestTLSReplicas verifies that each replica gets its own certificate
+// with the correct SANs, and clients can reach each replica over HTTPS.
+func TestTLSReplicas(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	caddyfile := `{
+	auto_https off
+}
+:8443 {
+	tls /tls/cert.pem /tls/key.pem
+	respond "Hello TLS"
+}`
+
+	servers := w.NewContainer(ContainerSpec{
+		Image:    "caddy:latest",
+		Replicas: 2,
+		Files: []testcontainers.ContainerFile{
+			{
+				Reader:            strings.NewReader(caddyfile),
+				ContainerFilePath: "/etc/caddy/Caddyfile",
+				FileMode:          0o644,
+			},
+		},
+		ExposedPorts: []string{"8443/tcp"},
+		WaitingFor:   wait.ForLog("serving initial configuration"),
+	})
+
+	client := w.NewContainer(ContainerSpec{
+		Image:     "alpine/curl:latest",
+		KeepAlive: true,
+		Requires:  []WorldContainer{servers},
+	})
+
+	// Each individual replica should be reachable via HTTPS by its own name.
+	for _, pc := range servers.pending {
+		client.Exec([]string{
+			"curl", "-sf",
+			fmt.Sprintf("https://%s:8443/", pc.name),
+		}, 0)
+	}
+}

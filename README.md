@@ -8,6 +8,7 @@
 - **Test isolation**: Each test creates a separate namespace and docker bridge network.
 - **Replicas**: Create and control groups of identical containers.
 - **Network isolation**: Optionally block a container's internet access while keeping intra-world communication intact.
+- **Automatic TLS**: Every container receives a TLS certificate signed by a per-world CA, so that all containers can communicate over TLS.
 - **Low boilerplate**: Reduced boilerplate compared to `testcontainers-go`
 - **Log collection**: Collect logs from all containers and output to a verbose log file.
 - **Event tracking**: Outputs a timeline of events during the test.
@@ -260,6 +261,53 @@ client.Exec([]string{"wget", "-q", "-O", "/dev/null", "http://" + mock.Name + ":
 // The mock server cannot reach the internet
 mock.Exec([]string{"ping", "-c", "1", "-W", "2", "8.8.8.8"}, 1)
 ```
+
+## TLS
+
+Every world generates an ephemeral certificate authority. Each container
+receives a leaf certificate signed by that CA, and the CA is installed into
+the system trust store. This means containers can talk to each other over
+HTTPS without any extra configuration:
+
+```go
+caddyfile := `{
+    auto_https off
+}
+:8443 {
+    tls /tls/cert.pem /tls/key.pem
+    respond "Hello TLS"
+}`
+
+server := w.NewContainer(testworld.ContainerSpec{
+    Image: "caddy:latest",
+    Files: []testcontainers.ContainerFile{{
+        Reader:            strings.NewReader(caddyfile),
+        ContainerFilePath: "/etc/caddy/Caddyfile",
+    }},
+    WaitingFor: wait.ForLog("serving initial configuration"),
+})
+
+client := w.NewContainer(testworld.ContainerSpec{
+    Image:     "alpine/curl:latest",
+    KeepAlive: true,
+    Requires:  []testworld.WorldContainer{server},
+})
+
+client.Exec([]string{"curl", "-sf", "https://" + server.Name + ":8443/"}, 0)
+```
+
+Certificates are mounted at well-known paths inside every container:
+
+| Path | Description |
+|------|-------------|
+| `/tls/ca.crt` | World CA certificate |
+| `/tls/cert.pem` | Container's leaf certificate |
+| `/tls/key.pem` | Container's private key |
+
+The environment variables `TLS_CA_CERT`, `TLS_CERT`, and `TLS_KEY` point to
+these paths. Leaf certificates include SANs for all of the container's DNS
+names (container name, replica names, and any extra aliases) plus `localhost`
+and `127.0.0.1`.
 
 ## World Log
 

@@ -46,6 +46,7 @@ type World struct {
 	icn            *testcontainers.DockerNetwork // internal: no internet, shared by all containers
 	containers     map[string]WorldContainer
 	containerKinds map[string]int
+	tls            *worldCA
 }
 
 // pendingContainer holds the result of an async container creation.
@@ -138,6 +139,15 @@ func New(t *testing.T, logPath string) *World {
 		t.Fatalf("Failed to create internal network: %v", err)
 	}
 	w.icn = icn
+
+	// Generate a World-scoped CA so every container gets a TLS certificate.
+	// Certificates are mounted at TLSCACertPath, TLSCertPath, and TLSKeyPath.
+	ca, err := newWorldCA()
+	if err != nil {
+		w.Destroy()
+		t.Fatalf("Failed to create TLS CA: %v", err)
+	}
+	w.tls = ca
 
 	return &w
 }
@@ -310,6 +320,54 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 			}
 		}
 		containerRequest.ContainerRequest.Files = replicaFiles
+
+		// If TLS is enabled, generate a certificate for this replica and
+		// mount the CA cert, leaf cert, and key into the container.
+		if w.tls != nil {
+			certPEM, keyPEM, err := w.tls.generateCert(aliases)
+			if err != nil {
+				w.t.Fatalf("Failed to generate TLS cert for %s: %v", replicaName, err)
+			}
+			containerRequest.ContainerRequest.Files = append(containerRequest.ContainerRequest.Files,
+				testcontainers.ContainerFile{Reader: bytes.NewReader(w.tls.certPEM), ContainerFilePath: TLSCACertPath, FileMode: 0o644},
+				testcontainers.ContainerFile{Reader: bytes.NewReader(certPEM), ContainerFilePath: TLSCertPath, FileMode: 0o644},
+				testcontainers.ContainerFile{Reader: bytes.NewReader(keyPEM), ContainerFilePath: TLSKeyPath, FileMode: 0o600},
+				// Also place the CA in the OS trust store directory so
+				// update-ca-certificates can pick it up.
+				testcontainers.ContainerFile{Reader: bytes.NewReader(w.tls.certPEM), ContainerFilePath: "/usr/local/share/ca-certificates/testworld-ca.crt", FileMode: 0o644},
+			)
+
+			// Install the CA into the system trust store so that TLS
+			// clients (curl, wget, Go, etc.) trust it automatically.
+			containerRequest.ContainerRequest.LifecycleHooks = append(
+				containerRequest.ContainerRequest.LifecycleHooks,
+				testcontainers.ContainerLifecycleHooks{
+					PostStarts: []testcontainers.ContainerHook{
+						func(ctx context.Context, c testcontainers.Container) error {
+							// Try update-ca-certificates first (Debian/Alpine with the
+							// ca-certificates package), then fall back to directly
+							// appending the CA to common bundle locations.
+							//nolint:errcheck
+							c.Exec(ctx, []string{"sh", "-c", strings.Join([]string{
+								"update-ca-certificates 2>/dev/null",
+								"cat /tls/ca.crt >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null",
+								"true",
+							}, " || ")})
+							return nil
+						},
+					},
+				},
+			)
+
+			env := make(map[string]string, len(containerRequest.ContainerRequest.Env)+3)
+			for k, v := range containerRequest.ContainerRequest.Env {
+				env[k] = v
+			}
+			env["TLS_CA_CERT"] = TLSCACertPath
+			env["TLS_CERT"] = TLSCertPath
+			env["TLS_KEY"] = TLSKeyPath
+			containerRequest.ContainerRequest.Env = env
+		}
 
 		if contextArchiveData != nil {
 			containerRequest.ContainerRequest.FromDockerfile.ContextArchive = bytes.NewReader(contextArchiveData)
