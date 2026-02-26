@@ -17,6 +17,10 @@ type ContainerSpec struct {
 	// traffic to external networks is dropped.
 	Isolated bool
 
+	// Aliases adds extra DNS aliases for this container, making it reachable
+	// by additional names from other containers in the world.
+	Aliases []string
+
 	// FromDockerfile allows building an image from a Dockerfile.
 	FromDockerfile testcontainers.FromDockerfile
 

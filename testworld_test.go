@@ -306,6 +306,33 @@ func TestIsolatedContainerNoInternet(t *testing.T) {
 	isolated.Exec([]string{"ping", "-c", "1", "-W", "2", "8.8.8.8"}, 1)
 }
 
+// TestAliases tests that extra DNS aliases make a container reachable
+// by additional names from other containers.
+func TestAliases(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	server := w.NewContainer(ContainerSpec{
+		Image:   "alpine:latest",
+		Cmd:     []string{"sleep", "60"},
+		Aliases: []string{"mydb", "primary"},
+	})
+
+	client := w.NewContainer(ContainerSpec{
+		Image: "alpine:latest",
+		Cmd:   []string{"sleep", "60"},
+	})
+
+	server.Await()
+
+	// The container should be reachable by each extra alias.
+	client.Exec([]string{"ping", "-c", "1", "mydb"}, 0)
+	client.Exec([]string{"ping", "-c", "1", "primary"}, 0)
+
+	// The auto-generated name should still work.
+	client.Exec([]string{"ping", "-c", "1", server.Name}, 0)
+}
+
 // TestReplicaFileReaders verifies that each replica receives the complete
 // contents of every io.Reader-based ContainerFile. Without the buffering fix,
 // the first replica goroutine to start would exhaust the shared reader,

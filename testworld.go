@@ -290,6 +290,7 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 			replicaName = fmt.Sprintf("%s-%d", name, i+1)
 			aliases = []string{replicaName, name}
 		}
+		aliases = append(aliases, spec.Aliases...)
 
 		pc := &pendingContainer{
 			name:  replicaName,

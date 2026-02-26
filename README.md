@@ -103,6 +103,9 @@ spec := testworld.ContainerSpec{
     // Wait strategy for readiness
     WaitingFor: wait.ForHTTP("/health"),
 
+    // Extra DNS aliases 
+    Aliases: []string{"db", "primary"},
+
     // Block internet access (see Network Isolation below)
     Isolated: true,
 
