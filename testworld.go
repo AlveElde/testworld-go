@@ -240,7 +240,7 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 
 	// Generate a unique group name for the container
 	w.containerKinds[kind]++
-	name := fmt.Sprintf("%s-%s-%d", w.name, kind, w.containerKinds[kind])
+	name := strings.ToLower(fmt.Sprintf("%s-%s-%d", w.name, kind, w.containerKinds[kind]))
 
 	replicas := max(spec.Replicas, 1)
 	pending := make([]*pendingContainer, replicas)
