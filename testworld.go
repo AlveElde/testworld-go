@@ -331,7 +331,7 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 			containerRequest.ContainerRequest.Files = append(containerRequest.ContainerRequest.Files,
 				testcontainers.ContainerFile{Reader: bytes.NewReader(w.tls.certPEM), ContainerFilePath: TLSCACertPath, FileMode: 0o644},
 				testcontainers.ContainerFile{Reader: bytes.NewReader(certPEM), ContainerFilePath: TLSCertPath, FileMode: 0o644},
-				testcontainers.ContainerFile{Reader: bytes.NewReader(keyPEM), ContainerFilePath: TLSKeyPath, FileMode: 0o600},
+				testcontainers.ContainerFile{Reader: bytes.NewReader(keyPEM), ContainerFilePath: TLSKeyPath, FileMode: 0o644},
 				// Also place the CA in the OS trust store directory so
 				// update-ca-certificates can pick it up.
 				testcontainers.ContainerFile{Reader: bytes.NewReader(w.tls.certPEM), ContainerFilePath: "/usr/local/share/ca-certificates/testworld-ca.crt", FileMode: 0o644},
