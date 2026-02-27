@@ -64,6 +64,7 @@ type WorldContainer struct {
 	Name      string
 	isReady   bool
 	pending   []*pendingContainer
+	after     []WorldContainer
 	onDestroy func(WorldContainer)
 }
 
@@ -259,6 +260,7 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 		world:     w,
 		Name:      name,
 		pending:   pending,
+		after:     spec.After,
 		onDestroy: spec.OnDestroy,
 	}
 
@@ -421,6 +423,16 @@ func (wc *WorldContainer) Await() {
 // goroutine to finish before calling fn. If any container failed to create, or
 // if fn returns false, the test is failed with FailNow after all goroutines finish.
 func (wc *WorldContainer) forEachReady(fn func(pc *pendingContainer) bool) {
+	// Wait for After dependencies before proceeding.
+	for _, dep := range wc.after {
+		for _, dpc := range dep.pending {
+			<-dpc.ready
+			if dpc.err != nil {
+				wc.world.t.Fatalf("After dependency %s failed: %v", dep.Name, dpc.err)
+			}
+		}
+	}
+
 	var wg sync.WaitGroup
 	var failed atomic.Bool
 	for _, pc := range wc.pending {
