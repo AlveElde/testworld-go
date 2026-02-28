@@ -304,6 +304,17 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 		}
 		aliases = append(aliases, spec.Aliases...)
 
+		// Expand subdomains: join each subdomain with each existing alias.
+		if len(spec.Subdomains) > 0 {
+			base := make([]string, len(aliases))
+			copy(base, aliases)
+			for _, sub := range spec.Subdomains {
+				for _, a := range base {
+					aliases = append(aliases, sub+"."+a)
+				}
+			}
+		}
+
 		pc := &pendingContainer{
 			name:  replicaName,
 			ready: make(chan struct{}),

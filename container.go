@@ -21,6 +21,12 @@ type ContainerSpec struct {
 	// by additional names from other containers in the world.
 	Aliases []string
 
+	// Subdomains adds extra DNS aliases by joining each subdomain with each
+	// container name and alias using a dot. For example, Subdomains: ["foo"]
+	// on a container named "bar" with Aliases: ["baz"] creates additional
+	// aliases "foo.bar" and "foo.baz".
+	Subdomains []string
+
 	// FromDockerfile allows building an image from a Dockerfile.
 	FromDockerfile testcontainers.FromDockerfile
 

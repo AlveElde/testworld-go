@@ -485,10 +485,10 @@ func TestReplicaDNS(t *testing.T) {
 	servers.Await()
 
 	// Verify that the group name resolves to exactly 3 IPs.
-	// nslookup returns "Address" lines for both the DNS server (127.0.0.11)
-	// and the results; filter out the server to count only result IPs.
+	// Busybox nslookup needs the server address explicitly to avoid
+	// appending search domains. Filter out the server's own Address line.
 	client.Exec([]string{"sh", "-c", fmt.Sprintf(
-		`test "$(nslookup %s | grep 'Address' | grep -cv '127.0.0.11')" -eq 3`,
+		`test "$(nslookup %s 127.0.0.11 | grep 'Address' | grep -cv '127.0.0.11')" -eq 3`,
 		servers.Name,
 	)}, 0)
 
@@ -519,7 +519,7 @@ func TestReplicaHTTP(t *testing.T) {
 
 	// Verify the group name resolves to 3 IPs
 	client.Exec([]string{"sh", "-c", fmt.Sprintf(
-		`test "$(nslookup %s | grep 'Address' | grep -cv '127.0.0.11')" -eq 3`,
+		`test "$(nslookup %s 127.0.0.11 | grep 'Address' | grep -cv '127.0.0.11')" -eq 3`,
 		servers.Name,
 	)}, 0)
 
@@ -680,4 +680,85 @@ func TestTLSReplicas(t *testing.T) {
 			fmt.Sprintf("https://%s:8443/", pc.name),
 		}, 0)
 	}
+}
+
+// TestSubdomains verifies that the Subdomains option creates additional
+// DNS aliases by joining each subdomain with the container name and aliases.
+func TestSubdomains(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	server := w.NewContainer(ContainerSpec{
+		Image:      "alpine:latest",
+		Cmd:        []string{"sleep", "60"},
+		Aliases:    []string{"mydb"},
+		Subdomains: []string{"foo", "bar"},
+	})
+
+	client := w.NewContainer(ContainerSpec{
+		Image:    "alpine:latest",
+		Cmd:      []string{"sleep", "60"},
+		Requires: []WorldContainer{server},
+	})
+
+	// Base names still work.
+	client.Exec([]string{"ping", "-c", "1", server.Name}, 0)
+	client.Exec([]string{"ping", "-c", "1", "mydb"}, 0)
+
+	// Subdomain aliases resolve.
+	client.Exec([]string{"ping", "-c", "1", "foo." + server.Name}, 0)
+	client.Exec([]string{"ping", "-c", "1", "bar." + server.Name}, 0)
+	client.Exec([]string{"ping", "-c", "1", "foo.mydb"}, 0)
+	client.Exec([]string{"ping", "-c", "1", "bar.mydb"}, 0)
+}
+
+// TestSubdomainTLS verifies that subdomain aliases have valid TLS
+// certificates and can be reached over HTTPS.
+func TestSubdomainTLS(t *testing.T) {
+	w := New(t, "./logs")
+	defer w.Destroy()
+
+	caddyfile := `{
+	auto_https off
+}
+:8443 {
+	tls /tls/cert.pem /tls/key.pem
+	respond "Hello Subdomain TLS"
+}`
+
+	server := w.NewContainer(ContainerSpec{
+		Image:      "caddy:latest",
+		Subdomains: []string{"tenant1", "tenant2"},
+		Files: []testcontainers.ContainerFile{
+			{
+				Reader:            strings.NewReader(caddyfile),
+				ContainerFilePath: "/etc/caddy/Caddyfile",
+				FileMode:          0o644,
+			},
+		},
+		ExposedPorts: []string{"8443/tcp"},
+		WaitingFor:   wait.ForLog("serving initial configuration"),
+	})
+
+	client := w.NewContainer(ContainerSpec{
+		Image:     "alpine/curl:latest",
+		KeepAlive: true,
+		Requires:  []WorldContainer{server},
+	})
+
+	// Direct name works.
+	client.Exec([]string{
+		"curl", "-sf",
+		fmt.Sprintf("https://%s:8443/", server.Name),
+	}, 0)
+
+	// Subdomain aliases work over TLS.
+	client.Exec([]string{
+		"curl", "-sf",
+		fmt.Sprintf("https://tenant1.%s:8443/", server.Name),
+	}, 0)
+	client.Exec([]string{
+		"curl", "-sf",
+		fmt.Sprintf("https://tenant2.%s:8443/", server.Name),
+	}, 0)
 }

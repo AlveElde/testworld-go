@@ -106,6 +106,9 @@ spec := testworld.ContainerSpec{
     // Extra DNS aliases
     Aliases: []string{"db", "primary"},
 
+    // Extra subdomain aliases (creates "tenant1.db", "tenant2.db", etc.)
+    Subdomains: []string{"tenant1", "tenant2"},
+
     // Block creation until dependencies are ready (see Dependencies below)
     Requires: []testworld.WorldContainer{db},
 
