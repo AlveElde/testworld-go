@@ -352,20 +352,31 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 
 			// Install the CA into the system trust store so that TLS
 			// clients (curl, wget, Go, etc.) trust it automatically.
+			// This runs after container creation but before start, so
+			// the CA is present before the application reads the store.
+			caPEM := w.tls.certPEM
 			containerRequest.ContainerRequest.LifecycleHooks = append(
 				containerRequest.ContainerRequest.LifecycleHooks,
 				testcontainers.ContainerLifecycleHooks{
-					PostStarts: []testcontainers.ContainerHook{
+					PostCreates: []testcontainers.ContainerHook{
 						func(ctx context.Context, c testcontainers.Container) error {
-							// Try update-ca-certificates first (Debian/Alpine with the
-							// ca-certificates package), then fall back to directly
-							// appending the CA to common bundle locations.
-							//nolint:errcheck
-							c.Exec(ctx, []string{"sh", "-c", strings.Join([]string{
-								"update-ca-certificates 2>/dev/null",
-								"cat /tls/ca.crt >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null",
-								"true",
-							}, " || ")})
+							for _, p := range []string{
+								"/etc/ssl/certs/ca-certificates.crt",
+								"/etc/pki/tls/certs/ca-bundle.crt",
+							} {
+								reader, err := c.CopyFileFromContainer(ctx, p)
+								if err != nil {
+									continue
+								}
+								bundle, _ := io.ReadAll(reader)
+								reader.Close()
+								if len(bundle) > 0 && bundle[len(bundle)-1] != '\n' {
+									bundle = append(bundle, '\n')
+								}
+								bundle = append(bundle, caPEM...)
+								//nolint:errcheck
+								c.CopyToContainer(ctx, bundle, p, 0o644)
+							}
 							return nil
 						},
 					},
