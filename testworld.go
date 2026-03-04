@@ -10,8 +10,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/network"
@@ -21,6 +22,81 @@ import (
 const (
 	timelineWidth = 80
 )
+
+// sharedNetworks holds a single pair of Docker networks shared by all World
+// instances in this test binary. Networks are created on first use and removed
+// when the last World is destroyed.
+type sharedNetworks struct {
+	once    sync.Once
+	cn      *testcontainers.DockerNetwork // external bridge
+	icn     *testcontainers.DockerNetwork // internal bridge
+	initErr error
+	refs    atomic.Int32
+}
+
+var shared sharedNetworks
+
+// acquire creates the shared networks on first call and increments the
+// reference count. Every acquire must be paired with exactly one release.
+func (s *sharedNetworks) acquire(ctx context.Context, t *testing.T) (external, internal *testcontainers.DockerNetwork) {
+	s.once.Do(func() {
+		type result struct {
+			net *testcontainers.DockerNetwork
+			err error
+		}
+		extCh := make(chan result, 1)
+		intCh := make(chan result, 1)
+
+		go func() {
+			n, err := network.New(ctx, network.WithDriver("bridge"), network.WithAttachable())
+			extCh <- result{n, err}
+		}()
+		go func() {
+			n, err := network.New(ctx, network.WithDriver("bridge"), network.WithAttachable(), network.WithInternal())
+			intCh <- result{n, err}
+		}()
+
+		ext, int_ := <-extCh, <-intCh
+		if ext.err != nil {
+			s.initErr = fmt.Errorf("create external network: %w", ext.err)
+			return
+		}
+		if int_.err != nil {
+			s.initErr = fmt.Errorf("create internal network: %w", int_.err)
+			return
+		}
+		s.cn = ext.net
+		s.icn = int_.net
+	})
+
+	if s.initErr != nil {
+		t.Fatalf("Failed to acquire shared networks: %v", s.initErr)
+	}
+	s.refs.Add(1)
+	return s.cn, s.icn
+}
+
+// release decrements the reference count and removes the shared networks
+// when it reaches zero.
+func (s *sharedNetworks) release(ctx context.Context, t *testing.T) {
+	if s.refs.Add(-1) > 0 {
+		return
+	}
+	docker, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Log("Failed to create Docker client for network cleanup: ", err)
+		return
+	}
+	defer docker.Close()
+	if s.cn != nil {
+		//nolint:errcheck
+		docker.NetworkRemove(ctx, s.cn.Name)
+	}
+	if s.icn != nil {
+		//nolint:errcheck
+		docker.NetworkRemove(ctx, s.icn.Name)
+	}
+}
 
 // basename returns the last component of a path, stripping any suffix after ":".
 // e.g., "alpine:latest" -> "alpine", "docker.io/library/nginx:1.19" -> "nginx"
@@ -114,32 +190,8 @@ func New(t *testing.T, logPath string) *World {
 	event := w.worldLog.newEvent("World: Create")
 	defer event.finish()
 
-	// Create the external network (regular bridge with internet access).
-	cn, err := network.New(w.ctx,
-		network.WithDriver("bridge"),
-		network.WithAttachable(),
-	)
-	testcontainers.CleanupNetwork(t, cn)
-	if err != nil {
-		w.Destroy()
-		t.Fatalf("Failed to create network: %v", err)
-	}
-	w.cn = cn
-
-	// Create the internal network (no internet access). All containers join
-	// this network so they can communicate with each other regardless of
-	// isolation. Isolated containers join only this network.
-	icn, err := network.New(w.ctx,
-		network.WithDriver("bridge"),
-		network.WithAttachable(),
-		network.WithInternal(),
-	)
-	testcontainers.CleanupNetwork(t, icn)
-	if err != nil {
-		w.Destroy()
-		t.Fatalf("Failed to create internal network: %v", err)
-	}
-	w.icn = icn
+	// Acquire shared networks (created once, reused across all parallel tests).
+	w.cn, w.icn = shared.acquire(w.ctx, t)
 
 	// Generate a World-scoped CA so every container gets a TLS certificate.
 	// Certificates are mounted at TLSCACertPath, TLSCertPath, and TLSKeyPath.
@@ -171,7 +223,7 @@ func (w *World) Destroy() {
 
 	event := w.worldLog.newEvent("World: destroy")
 
-	// Destroy all containers concurrently.
+	// Collect logs from all containers concurrently.
 	var wg sync.WaitGroup
 	for _, c := range w.containers {
 		wg.Add(1)
@@ -191,16 +243,8 @@ func (w *World) Destroy() {
 						w.t.Log("Container ", pc.name, " failed to create: ", pc.err)
 						return
 					}
-
-					// Try to collect logs, but don't fail if it doesn't work during cleanup
 					if err := c.logOneInternal(pc.name, pc.container); err != nil {
 						w.t.Log("Failed to collect logs for container ", pc.name, ": ", err)
-					}
-
-					// Terminate the container with a half a second timeout
-					// The default timeout is 10 seconds, after which Docker sends SIGKILL
-					if err := pc.container.Terminate(w.ctx, testcontainers.StopTimeout(time.Millisecond*500)); err != nil {
-						w.t.Log("Failed to terminate container ", pc.name, ": ", err)
 					}
 				}(pc)
 			}
@@ -209,8 +253,42 @@ func (w *World) Destroy() {
 	}
 	wg.Wait()
 
+	// Force-remove all containers concurrently using the Docker client
+	// directly. This skips testcontainers' Stop (SIGTERM → wait → SIGKILL)
+	// and lifecycle hooks, issuing a single SIGKILL+remove per container.
+	docker, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		w.t.Log("Failed to create Docker client for cleanup: ", err)
+	} else {
+		defer docker.Close()
+		var rmWg sync.WaitGroup
+		for _, c := range w.containers {
+			for _, pc := range c.pending {
+				if pc.err != nil {
+					continue
+				}
+				rmWg.Add(1)
+				go func(id string) {
+					defer rmWg.Done()
+					//nolint:errcheck
+					docker.ContainerRemove(w.ctx, id, container.RemoveOptions{
+						RemoveVolumes: true,
+						Force:         true,
+					})
+				}(pc.container.GetContainerID())
+			}
+		}
+		rmWg.Wait()
+	}
+
 	event.finish()
 	w.worldLog.finish()
+
+	// Release our reference to the shared networks.
+	// The last World to release removes them.
+	if w.cn != nil {
+		shared.release(w.ctx, w.t)
+	}
 }
 
 // logOneInternal writes a single container's logs to the world log.
@@ -345,42 +423,14 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 				testcontainers.ContainerFile{Reader: bytes.NewReader(w.tls.certPEM), ContainerFilePath: TLSCACertPath, FileMode: 0o644},
 				testcontainers.ContainerFile{Reader: bytes.NewReader(certPEM), ContainerFilePath: TLSCertPath, FileMode: 0o644},
 				testcontainers.ContainerFile{Reader: bytes.NewReader(keyPEM), ContainerFilePath: TLSKeyPath, FileMode: 0o644},
-				// Also place the CA in the OS trust store directory so
+				// Place the CA in the OS trust store directory so
 				// update-ca-certificates can pick it up.
 				testcontainers.ContainerFile{Reader: bytes.NewReader(w.tls.certPEM), ContainerFilePath: "/usr/local/share/ca-certificates/testworld-ca.crt", FileMode: 0o644},
-			)
-
-			// Install the CA into the system trust store so that TLS
-			// clients (curl, wget, Go, etc.) trust it automatically.
-			// This runs after container creation but before start, so
-			// the CA is present before the application reads the store.
-			caPEM := w.tls.certPEM
-			containerRequest.ContainerRequest.LifecycleHooks = append(
-				containerRequest.ContainerRequest.LifecycleHooks,
-				testcontainers.ContainerLifecycleHooks{
-					PostCreates: []testcontainers.ContainerHook{
-						func(ctx context.Context, c testcontainers.Container) error {
-							for _, p := range []string{
-								"/etc/ssl/certs/ca-certificates.crt",
-								"/etc/pki/tls/certs/ca-bundle.crt",
-							} {
-								reader, err := c.CopyFileFromContainer(ctx, p)
-								if err != nil {
-									continue
-								}
-								bundle, _ := io.ReadAll(reader)
-								reader.Close()
-								if len(bundle) > 0 && bundle[len(bundle)-1] != '\n' {
-									bundle = append(bundle, '\n')
-								}
-								bundle = append(bundle, caPEM...)
-								//nolint:errcheck
-								c.CopyToContainer(ctx, bundle, p, 0o644)
-							}
-							return nil
-						},
-					},
-				},
+				// Mount the pre-built combined CA bundle directly into
+				// the well-known trust store paths, avoiding per-container
+				// Docker API calls to read-modify-write the trust store.
+				testcontainers.ContainerFile{Reader: bytes.NewReader(w.tls.bundlePEM), ContainerFilePath: "/etc/ssl/certs/ca-certificates.crt", FileMode: 0o644},
+				testcontainers.ContainerFile{Reader: bytes.NewReader(w.tls.bundlePEM), ContainerFilePath: "/etc/pki/tls/certs/ca-bundle.crt", FileMode: 0o644},
 			)
 
 			env := make(map[string]string, len(containerRequest.ContainerRequest.Env)+3)
@@ -416,7 +466,6 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 			defer event.finish()
 
 			container, err := testcontainers.GenericContainer(w.ctx, containerRequest)
-			testcontainers.CleanupContainer(w.t, container)
 
 			// Write results before closing the channel (happens-before guarantee)
 			pc.container = container

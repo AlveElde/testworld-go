@@ -4,14 +4,14 @@
 
 ## Features
 
-- **Async**: Containers are created asynchronously, leading to faster tests when more than one container is used.
-- **Test isolation**: Each test creates a separate namespace and docker bridge network.
-- **Replicas**: Create and control groups of identical containers.
-- **Network isolation**: Optionally block a container's internet access while keeping intra-world communication intact.
-- **Automatic TLS**: Every container receives a TLS certificate signed by a per-world CA, so that all containers can communicate over TLS.
-- **Low boilerplate**: Reduced boilerplate compared to `testcontainers-go`
-- **Log collection**: Collect logs from all containers and output to a verbose log file.
-- **Event tracking**: Outputs a timeline of events during the test.
+- **Async with transparent await**: Containers are always created in the background. The test only waits for the container being ready right before it is needed.
+- **Dependencies**: Declare ordering between containers with systemd-like semantics (`Requires` and `After`).
+- **Automatic TLS**: Every container receives a TLS certificate signed by a per-world CA and the CA is installed into the system trust store, enabling HTTPS between containers without extra configuration.
+- **Automatic DNS**: Every container gets a DNS name, with support for additional aliases and subdomains.
+- **Network isolation**: Block a container's internet access while keeping intra-world communication intact.
+- **Replicas**: Create groups of identical containers that share a DNS name via round-robin and can be addressed individually.
+- **Log collection**: Collect stdout/stderr and arbitrary files from all containers into a combined log.
+- **Event timeline**: Generates an ASCII Gantt chart showing the timing of every operation during the test.
 
 ## Installation
 

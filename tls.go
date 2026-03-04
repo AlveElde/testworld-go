@@ -10,8 +10,16 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"os"
 	"time"
 )
+
+// Well-known CA bundle paths on the host, used to build a combined trust
+// store that includes the testworld CA without per-container Docker API calls.
+var caBundlePaths = []string{
+	"/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu/Alpine
+	"/etc/pki/tls/certs/ca-bundle.crt",   // Red Hat/CentOS
+}
 
 const (
 	// TLSCACertPath is the in-container path to the world CA certificate.
@@ -28,6 +36,10 @@ type worldCA struct {
 	cert    *x509.Certificate
 	key     *ecdsa.PrivateKey
 	certPEM []byte
+	// bundlePEM is the host's CA bundle with the testworld CA appended.
+	// Mounted directly into containers to avoid per-container Docker API
+	// calls that would otherwise read-modify-write the trust store.
+	bundlePEM []byte
 }
 
 // newWorldCA generates a self-signed ECDSA P-256 CA certificate valid for one hour.
@@ -64,7 +76,22 @@ func newWorldCA() (*worldCA, error) {
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
-	return &worldCA{cert: cert, key: key, certPEM: certPEM}, nil
+	// Build a combined CA bundle by reading the host's trust store and
+	// appending our CA. This is mounted directly into containers, avoiding
+	// per-container Docker API calls to read-modify-write the trust store.
+	var bundlePEM []byte
+	for _, p := range caBundlePaths {
+		if data, err := os.ReadFile(p); err == nil {
+			bundlePEM = data
+			break
+		}
+	}
+	if len(bundlePEM) > 0 && bundlePEM[len(bundlePEM)-1] != '\n' {
+		bundlePEM = append(bundlePEM, '\n')
+	}
+	bundlePEM = append(bundlePEM, certPEM...)
+
+	return &worldCA{cert: cert, key: key, certPEM: certPEM, bundlePEM: bundlePEM}, nil
 }
 
 // generateCert creates a leaf certificate signed by the CA. The certificate
