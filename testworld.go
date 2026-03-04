@@ -225,7 +225,7 @@ func (wc *WorldContainer) logOneInternal(name string, container testcontainers.C
 	defer logsReader.Close()
 
 	if event != nil {
-		if _, err = stdcopy.StdCopy(event.log, event.log, logsReader); err != nil {
+		if _, err = io.Copy(event.log, logsReader); err != nil {
 			return fmt.Errorf("failed to copy logs: %w", err)
 		}
 	}
