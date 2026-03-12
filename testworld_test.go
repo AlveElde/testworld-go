@@ -17,8 +17,11 @@ func TestWorldCreation(t *testing.T) {
 	w := New(t, "./logs")
 	defer w.Destroy()
 
-	if w.name != t.Name() {
-		t.Errorf("Expected world name %q, got %q", t.Name(), w.name)
+	// w.name replaces "/" with "-" so slashes in subtest names become dashes.
+	// For top-level tests there are no slashes, so it equals t.Name().
+	expectedName := strings.ReplaceAll(t.Name(), "/", "-")
+	if w.name != expectedName {
+		t.Errorf("world name: got %q, want %q", w.name, expectedName)
 	}
 
 	if w.ctx == nil {
@@ -710,6 +713,82 @@ func TestSubdomains(t *testing.T) {
 	client.Exec([]string{"ping", "-c", "1", "bar." + server.Name}, 0)
 	client.Exec([]string{"ping", "-c", "1", "foo.mydb"}, 0)
 	client.Exec([]string{"ping", "-c", "1", "bar.mydb"}, 0)
+}
+
+// TestSubtestContainerName verifies that container names inside t.Run()
+// subtests are derived from the full test path, with "/" replaced by "-".
+func TestSubtestContainerName(t *testing.T) {
+	t.Run("nested", func(t *testing.T) {
+		w := New(t, "")
+		defer w.Destroy()
+
+		// t.Name() == "TestSubtestContainerName/nested"
+		// w.name must replace "/" with "-"
+		expectedWorldName := strings.ReplaceAll(t.Name(), "/", "-")
+		if w.name != expectedWorldName {
+			t.Errorf("world name: got %q, want %q", w.name, expectedWorldName)
+		}
+
+		wc := w.NewContainer(ContainerSpec{
+			Image:     "alpine:latest",
+			KeepAlive: true,
+		})
+
+		// Container name must be lowercased world name + "-" + kind + "-" + counter.
+		expectedPrefix := strings.ToLower(expectedWorldName) + "-"
+		if !strings.HasPrefix(wc.Name, expectedPrefix) {
+			t.Errorf("container name %q does not start with %q", wc.Name, expectedPrefix)
+		}
+	})
+}
+
+// TestSubtestNetworkConnectivity verifies that containers created inside a
+// t.Run() subtest can reach each other by DNS name on the shared network.
+func TestSubtestNetworkConnectivity(t *testing.T) {
+	t.Run("connectivity", func(t *testing.T) {
+		w := New(t, "")
+		defer w.Destroy()
+
+		server := w.NewContainer(ContainerSpec{
+			Image: "alpine:latest",
+			Cmd:   []string{"sleep", "60"},
+		})
+		client := w.NewContainer(ContainerSpec{
+			Image: "alpine:latest",
+			Cmd:   []string{"sleep", "60"},
+		})
+
+		server.Await()
+		client.Exec([]string{"ping", "-c", "1", server.Name}, 0)
+	})
+}
+
+// TestParallelSubtests verifies that multiple parallel subtests can each run
+// an independent World whose containers are reachable by their DNS names,
+// without name collisions between subtests.
+func TestParallelSubtests(t *testing.T) {
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			w := New(t, "./logs")
+			defer w.Destroy()
+
+			server := w.NewContainer(ContainerSpec{
+				Image: "alpine:latest",
+				Cmd:   []string{"sleep", "60"},
+			})
+			client := w.NewContainer(ContainerSpec{
+				Image: "alpine:latest",
+				Cmd:   []string{"sleep", "60"},
+			})
+
+			server.Await()
+
+			// Each subtest's client must reach its own server by the
+			// subtest-scoped DNS name (e.g. testparallelsubtests-alpha-alpine-1).
+			client.Exec([]string{"ping", "-c", "1", server.Name}, 0)
+		})
+	}
 }
 
 // TestSubdomainTLS verifies that subdomain aliases have valid TLS

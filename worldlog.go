@@ -71,6 +71,7 @@ func (el *WorldLog) finish() error {
 	defer el.combinedLog.Close()
 	el.finishTime = time.Now()
 
+	el.printInventory()
 	el.printGantt()
 
 	// Concatenate all the event logs into the main event log.
@@ -94,6 +95,35 @@ func (el *WorldLog) finish() error {
 
 	log.Printf("🌍 World destroyed, logs written to %s", el.combinedLogPath)
 	return nil
+}
+
+// printInventory writes a summary table of all containers in the world,
+// including their image, isolation status, and DNS aliases per replica.
+func (el *WorldLog) printInventory() {
+	if el == nil || el.world == nil {
+		return
+	}
+
+	fmt.Fprintln(el.combinedLog, "Container Inventory:")
+	for _, wc := range el.world.containers {
+		isolated := ""
+		if wc.isolated {
+			isolated = " [isolated]"
+		}
+		fmt.Fprintf(el.combinedLog, "  %s  image=%s%s\n", wc.Name, wc.image, isolated)
+		for i, pc := range wc.pending {
+			prefix := "  └─"
+			if len(wc.pending) > 1 {
+				prefix = fmt.Sprintf("  ├─ [%d]", i+1)
+				if i == len(wc.pending)-1 {
+					prefix = fmt.Sprintf("  └─ [%d]", i+1)
+				}
+			}
+			fmt.Fprintf(el.combinedLog, "%s %s  aliases: %s\n",
+				prefix, pc.name, strings.Join(pc.aliases, ", "))
+		}
+	}
+	fmt.Fprintln(el.combinedLog)
 }
 
 // printGantt writes a simple ASCII Gantt chart to the world log.

@@ -27,19 +27,23 @@ const (
 // instances in this test binary. Networks are created on first use and removed
 // when the last World is destroyed.
 type sharedNetworks struct {
-	once    sync.Once
-	cn      *testcontainers.DockerNetwork // external bridge
-	icn     *testcontainers.DockerNetwork // internal bridge
-	initErr error
-	refs    atomic.Int32
+	mu   sync.Mutex
+	cn   *testcontainers.DockerNetwork // external bridge
+	icn  *testcontainers.DockerNetwork // internal bridge
+	refs int
 }
 
 var shared sharedNetworks
 
-// acquire creates the shared networks on first call and increments the
-// reference count. Every acquire must be paired with exactly one release.
+// acquire increments the reference count and returns the shared networks,
+// creating them first if no World currently holds a reference.
+// Every acquire must be paired with exactly one release.
 func (s *sharedNetworks) acquire(ctx context.Context, t *testing.T) (external, internal *testcontainers.DockerNetwork) {
-	s.once.Do(func() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.refs == 0 {
+		// No live World holds the networks; create a fresh pair.
 		type result struct {
 			net *testcontainers.DockerNetwork
 			err error
@@ -58,43 +62,47 @@ func (s *sharedNetworks) acquire(ctx context.Context, t *testing.T) (external, i
 
 		ext, int_ := <-extCh, <-intCh
 		if ext.err != nil {
-			s.initErr = fmt.Errorf("create external network: %w", ext.err)
-			return
+			t.Fatalf("Failed to create external network: %v", ext.err)
 		}
 		if int_.err != nil {
-			s.initErr = fmt.Errorf("create internal network: %w", int_.err)
-			return
+			t.Fatalf("Failed to create internal network: %v", int_.err)
 		}
 		s.cn = ext.net
 		s.icn = int_.net
-	})
-
-	if s.initErr != nil {
-		t.Fatalf("Failed to acquire shared networks: %v", s.initErr)
 	}
-	s.refs.Add(1)
+
+	s.refs++
 	return s.cn, s.icn
 }
 
 // release decrements the reference count and removes the shared networks
 // when it reaches zero.
 func (s *sharedNetworks) release(ctx context.Context, t *testing.T) {
-	if s.refs.Add(-1) > 0 {
+	s.mu.Lock()
+	s.refs--
+	if s.refs > 0 {
+		s.mu.Unlock()
 		return
 	}
+	// Capture and clear the pointers under the lock so a concurrent acquire
+	// sees refs == 0 and cn == nil, triggering fresh network creation.
+	cn, icn := s.cn, s.icn
+	s.cn, s.icn = nil, nil
+	s.mu.Unlock()
+
 	docker, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		t.Log("Failed to create Docker client for network cleanup: ", err)
 		return
 	}
 	defer docker.Close()
-	if s.cn != nil {
+	if cn != nil {
 		//nolint:errcheck
-		docker.NetworkRemove(ctx, s.cn.Name)
+		docker.NetworkRemove(ctx, cn.Name)
 	}
-	if s.icn != nil {
+	if icn != nil {
 		//nolint:errcheck
-		docker.NetworkRemove(ctx, s.icn.Name)
+		docker.NetworkRemove(ctx, icn.Name)
 	}
 }
 
@@ -130,6 +138,7 @@ type World struct {
 // happens-before ordering per the Go memory model.
 type pendingContainer struct {
 	name      string
+	aliases   []string // DNS aliases registered on the shared networks
 	ready     chan struct{}
 	container testcontainers.Container
 	err       error
@@ -138,6 +147,8 @@ type pendingContainer struct {
 type WorldContainer struct {
 	world     *World
 	Name      string
+	image     string // image name, or "dockerfile:<context>" for custom builds
+	isolated  bool
 	isReady   bool
 	pending   []*pendingContainer
 	after     []WorldContainer
@@ -334,9 +345,21 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 	replicas := max(spec.Replicas, 1)
 	pending := make([]*pendingContainer, replicas)
 
+	// Derive a human-readable image label for the inventory log.
+	imageLabel := spec.Image
+	if imageLabel == "" {
+		ctx := spec.FromDockerfile.Context
+		if ctx == "" {
+			ctx = "<archive>"
+		}
+		imageLabel = "dockerfile:" + ctx
+	}
+
 	wc := WorldContainer{
 		world:     w,
 		Name:      name,
+		image:     imageLabel,
+		isolated:  spec.Isolated,
 		pending:   pending,
 		after:     spec.After,
 		onDestroy: spec.OnDestroy,
@@ -394,8 +417,9 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 		}
 
 		pc := &pendingContainer{
-			name:  replicaName,
-			ready: make(chan struct{}),
+			name:    replicaName,
+			aliases: aliases,
+			ready:   make(chan struct{}),
 		}
 		pending[i] = pc
 
