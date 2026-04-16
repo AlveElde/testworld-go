@@ -122,6 +122,27 @@ func TestContainerExec(t *testing.T) {
 	wc.Exec([]string{"false"}, 1)
 }
 
+// TestExecNonZeroExitWithOutput verifies that Exec correctly reports a non-zero
+// exit code from a command that also produces output, across multiple concurrent
+// replicas.
+func TestExecNonZeroExitWithOutput(t *testing.T) {
+	w := New(t, t.TempDir())
+	defer w.Destroy()
+
+	wc := w.NewContainer(ContainerSpec{
+		Image:    "alpine:latest",
+		Cmd:      []string{"sleep", "60"},
+		Replicas: 4,
+	})
+
+	// 20 rounds × 4 replicas = 80 concurrent Exec calls. Each produces output
+	// to stderr then exits 1. A misreported exit code of 0 fails the test via
+	// t.Errorf inside Exec.
+	for range 20 {
+		wc.Exec([]string{"sh", "-c", "seq 1 100 >&2; exit 1"}, 1)
+	}
+}
+
 // TestContainerWait tests waiting for a container with a wait strategy.
 func TestContainerWait(t *testing.T) {
 	w := New(t, "./logs")

@@ -13,8 +13,8 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/testcontainers/testcontainers-go"
+	tcexec "github.com/testcontainers/testcontainers-go/exec"
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -556,13 +556,17 @@ func (wc *WorldContainer) Exec(cmd []string, expectCode int) {
 	wc.forEachReady(func(pc *pendingContainer) bool {
 		event := wc.world.worldLog.newEvent("%s: exec %s", pc.name, strings.Join(cmd, " "))
 		defer event.finish()
-		exitCode, logsReader, err := pc.container.Exec(wc.world.ctx, cmd)
+		exitCode, logsReader, err := pc.container.Exec(wc.world.ctx, cmd, tcexec.Multiplexed())
 		if err != nil {
 			wc.world.t.Errorf("Failed to exec in container %s: %v", pc.name, err)
 			return false
 		}
-		if event != nil {
-			stdcopy.StdCopy(event.log, event.log, logsReader)
+		if logsReader != nil {
+			if event != nil {
+				io.Copy(event.log, logsReader)
+			} else {
+				io.Copy(io.Discard, logsReader)
+			}
 		}
 		if exitCode != expectCode {
 			wc.world.t.Errorf("Command %v exited with code %d (expected %d) in container %s", cmd, exitCode, expectCode, pc.name)
