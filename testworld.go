@@ -11,8 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
 	"github.com/testcontainers/testcontainers-go/network"
@@ -90,7 +89,7 @@ func (s *sharedNetworks) release(ctx context.Context, t *testing.T) {
 	s.cn, s.icn = nil, nil
 	s.mu.Unlock()
 
-	docker, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	docker, err := client.New(client.FromEnv)
 	if err != nil {
 		t.Log("Failed to create Docker client for network cleanup: ", err)
 		return
@@ -98,11 +97,11 @@ func (s *sharedNetworks) release(ctx context.Context, t *testing.T) {
 	defer docker.Close()
 	if cn != nil {
 		//nolint:errcheck
-		docker.NetworkRemove(ctx, cn.Name)
+		docker.NetworkRemove(ctx, cn.Name, client.NetworkRemoveOptions{})
 	}
 	if icn != nil {
 		//nolint:errcheck
-		docker.NetworkRemove(ctx, icn.Name)
+		docker.NetworkRemove(ctx, icn.Name, client.NetworkRemoveOptions{})
 	}
 }
 
@@ -131,6 +130,7 @@ type World struct {
 	containers     map[string]WorldContainer
 	containerKinds map[string]int
 	tls            *worldCA
+	docker         *client.Client
 }
 
 // pendingContainer holds the result of an async container creation.
@@ -201,6 +201,12 @@ func New(t *testing.T, logPath string) *World {
 	event := w.worldLog.newEvent("World: Create")
 	defer event.finish()
 
+	docker, err := client.New(client.FromEnv)
+	if err != nil {
+		t.Fatalf("Failed to create Docker client: %v", err)
+	}
+	w.docker = docker
+
 	// Acquire shared networks (created once, reused across all parallel tests).
 	w.cn, w.icn = shared.acquire(w.ctx, t)
 
@@ -267,11 +273,8 @@ func (w *World) Destroy() {
 	// Force-remove all containers concurrently using the Docker client
 	// directly. This skips testcontainers' Stop (SIGTERM → wait → SIGKILL)
 	// and lifecycle hooks, issuing a single SIGKILL+remove per container.
-	docker, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		w.t.Log("Failed to create Docker client for cleanup: ", err)
-	} else {
-		defer docker.Close()
+	if w.docker != nil {
+		defer w.docker.Close()
 		var rmWg sync.WaitGroup
 		for _, c := range w.containers {
 			for _, pc := range c.pending {
@@ -282,7 +285,7 @@ func (w *World) Destroy() {
 				go func(id string) {
 					defer rmWg.Done()
 					//nolint:errcheck
-					docker.ContainerRemove(w.ctx, id, container.RemoveOptions{
+					w.docker.ContainerRemove(w.ctx, id, client.ContainerRemoveOptions{
 						RemoveVolumes: true,
 						Force:         true,
 					})
@@ -488,6 +491,10 @@ func (w *World) NewContainer(spec ContainerSpec) WorldContainer {
 
 			event := w.worldLog.newEvent("World: add %s container %s", kind, replicaName)
 			defer event.finish()
+
+			// Remove any stale container with the same name left over from a previous run.
+			//nolint:errcheck
+			w.docker.ContainerRemove(w.ctx, replicaName, client.ContainerRemoveOptions{Force: true})
 
 			container, err := testcontainers.GenericContainer(w.ctx, containerRequest)
 
