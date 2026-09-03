@@ -102,6 +102,16 @@ func (spec ContainerSpec) toGenericContainerRequest(name, externalNetwork, inter
 		cmd = []string{"sleep", "infinity"}
 	}
 
+	// A Docker daemon inside Kubernetes hands every container the pod's search
+	// domains, and musl's resolver never retries a single-label name bare, so
+	// the aliases stop resolving. "." is how Docker spells an empty list.
+	hostConfig := func(hc *container.HostConfig) {
+		hc.DNSSearch = []string{"."}
+		if spec.HostConfigModifier != nil {
+			spec.HostConfigModifier(hc)
+		}
+	}
+
 	return testcontainers.GenericContainerRequest{
 		Started: true,
 		ContainerRequest: testcontainers.ContainerRequest{
@@ -118,7 +128,7 @@ func (spec ContainerSpec) toGenericContainerRequest(name, externalNetwork, inter
 			WaitingFor:         spec.WaitingFor,
 			Files:              spec.Files,
 			ConfigModifier:     spec.ConfigModifier,
-			HostConfigModifier: spec.HostConfigModifier,
+			HostConfigModifier: hostConfig,
 		},
 	}
 }
