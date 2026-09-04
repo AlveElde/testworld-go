@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: "Which part of the version to increment"
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          #- major # Disabled for now
+
+jobs:
+  release:
+    name: Tag and publish a release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # main, whatever ref the run was dispatched from: a library released off
+      # a branch is a mistake every time. Full history, because the push at the
+      # end is rejected from a shallow clone.
+      - name: Check out main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # A published tag is immutable and consumers pin it, so it is worth
+      # twenty seconds to refuse to publish one that does not pass.
+      - name: Vet and test
+        run: make check
+
+      - name: Work out the next version
+        id: next
+        env:
+          LEVEL: ${{ inputs.level }}
+        run: |
+          set -euo pipefail
+          CURRENT="$(cat .version)"
+          if [[ ! "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=.version::Current version '$CURRENT' does not match X.Y.Z."
+            exit 1
+          fi
+          case "$LEVEL" in
+            major) FIELD=1 ;;
+            minor) FIELD=2 ;;
+            patch) FIELD=3 ;;
+            *) echo "::error::Unknown level '$LEVEL'."; exit 1 ;;
+          esac
+          VERSION="$(printf '%s' "$CURRENT" |
+            awk -F. -v f="$FIELD" 'BEGIN { OFS = "." }
+              { $f += 1; for (i = f + 1; i <= NF; i++) $i = 0; printf "%s", $0 }')"
+          if git ls-remote --exit-code --tags origin "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::Tag v$VERSION exists already, so .version has drifted from the tags."
+            exit 1
+          fi
+          echo "$CURRENT -> $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Commit the bump, tag it and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.next.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          printf '%s' "$VERSION" > .version
+          git add .version
+          git commit -m "Release v$VERSION"
+          git tag "v$VERSION"
+          # Atomic, so a main that moved under us cannot leave the tag behind.
+          git push --atomic origin main "v$VERSION"
+          gh release create "v$VERSION" --title "v$VERSION" --generate-notes

@@ -346,6 +346,19 @@ ID  | Process Visualization
 019 |                                                [#] (0.005s) TestReplicaHTTPClients-caddy-1-2: logs
 ```
 
+## Development
+
+`make check` vets the package and runs the tests. Every test boots real
+containers, so Docker has to be running. CI runs the same target, and uploads
+the world logs when it fails.
+
+## Releasing
+
+Run the Release workflow from the Actions tab and pick `patch` or `minor`. It
+runs the tests, increments `.version`, then commits the bump to main, tags that
+commit and publishes a release from it. Nothing needs to be installed locally
+to cut one.
+
 ## License
 
 MIT
