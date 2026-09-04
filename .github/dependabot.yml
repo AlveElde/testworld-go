@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      moby:
+        applies-to: version-updates
+        patterns:
+          - github.com/moby/moby/*
