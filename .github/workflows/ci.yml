@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Build and test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: make build
+
+      - name: Vet and test
+        run: make check
+
+      # The worlds write a timeline per test, which is the only record of what
+      # a container did before it was destroyed.
+      - name: Upload the world logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: world-logs
+          path: logs/
